@@ -141,11 +141,26 @@ export function statusBadge(status, label) {
   const [cls, text] = STATUS[status] || ['', status];
   return `<span class="badge ${cls}"><span class="dot"></span>${esc(label || text)}</span>`;
 }
-export const statusColor = (s) => ({ success: 'var(--success)', error: 'var(--danger)', blocked: 'var(--danger)', rejected: 'var(--danger)', waiting: 'var(--warning)', warning: 'var(--warning)', running: 'var(--primary)', approved: 'var(--success)' }[s] || 'var(--faint)');
+export const statusColor = (s) => ({ success: 'var(--success)', error: 'var(--danger)', blocked: 'var(--danger)', rejected: 'var(--danger)', waiting: 'var(--warning)', warning: 'var(--warning)', running: 'var(--ember)', approved: 'var(--success)' }[s] || 'var(--faint)');
 
+// Generated employees carry bright UI-kit colors; map them onto a quieter,
+// deliberately chosen palette (all AA with white initials). Unknown colors pass through.
+const AVATAR_TONES = {
+  '#6366f1': '#34379A', '#8b5cf6': '#5B3F86', '#0ea5e9': '#1F5F99', '#10b981': '#1F6B4A',
+  '#f59e0b': '#8A5A12', '#ef4444': '#A33A26', '#ec4899': '#8E3360', '#14b8a6': '#1D6566',
+};
 export function avatar(emp, size = '') {
-  const c = emp?.avatar?.color || '#6366F1';
+  const raw = String(emp?.avatar?.color || '#6366F1');
+  const c = AVATAR_TONES[raw.toLowerCase()] || raw;
   return `<div class="avatar ${size}" style="background:${esc(c)}">${esc(emp?.avatar?.initials || '?')}</div>`;
+}
+
+/** Keyboard hint, e.g. kbd('⌘K'). */
+export const kbd = (k) => `<kbd class="kbd">${esc(k)}</kbd>`;
+
+/** Shimmer placeholder lines while data loads. */
+export function skeleton(lines = 3) {
+  return `<div aria-busy="true">${Array.from({ length: lines }, (_, i) => `<span class="skeleton skeleton-line${i === lines - 1 ? ' short' : ''}"></span>`).join('')}</div>`;
 }
 
 /**
@@ -186,7 +201,7 @@ export function md(text) {
 }
 
 export function emptyState(ic, title, text, action = '') {
-  return `<div class="empty"><div class="empty-icon">${icon(ic)}</div><h3>${esc(title)}</h3><p class="small" style="max-width:420px">${text}</p>${action}</div>`;
+  return `<div class="empty"><div class="empty-icon">${icon(ic)}</div><h3 class="empty-title">${esc(title)}</h3><p class="small" style="max-width:420px">${text}</p>${action}</div>`;
 }
 
 export function debounce(fn, ms = 200) {

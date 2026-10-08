@@ -1,6 +1,13 @@
-import { esc, icon, avatar, statusBadge, timeAgo, fmtDateTime, refreshIcons, emptyState, confirmDialog, toast } from '../ui.js';
+import { esc, icon, avatar, statusBadge, timeAgo, fmtDateTime, refreshIcons, emptyState, confirmDialog, toast, sysIcon } from '../ui.js';
 import { activityTable, bindActivityRows } from './activity.js';
 import { formatDuration, safeStringify } from '../../extension/core/util.js';
+import { allSystems, systemForUrl, hostOf } from '../../extension/core/catalog.js';
+
+/** The system a task's working tab is in (null for other websites / no tab). */
+function tabSystem(task, connections) {
+  const id = task.browser?.url ? systemForUrl(task.browser.url, connections) : null;
+  return id ? { id, name: allSystems(connections)[id]?.name || id } : null;
+}
 
 export default async function tasks(ctx) {
   if (ctx.params.id) return taskDetail(ctx);
@@ -10,7 +17,7 @@ export default async function tasks(ctx) {
   const page = el.querySelector('#tp');
   const render = async () => {
     if (!ctx.isCurrent()) return;
-    const [all, employees, schedules] = await Promise.all([app.db.all('tasks'), app.db.all('employees'), app.db.all('schedules')]);
+    const [all, employees, schedules, connections] = await Promise.all([app.db.all('tasks'), app.db.all('employees'), app.db.all('schedules'), app.getConnections()]);
     const empById = Object.fromEntries(employees.map((e) => [e.id, e]));
     const groups = { all: () => true, active: (t) => ['running', 'queued', 'waiting_approval', 'paused'].includes(t.status), completed: (t) => t.status === 'completed', failed: (t) => ['failed', 'needs_attention', 'cancelled'].includes(t.status) };
     const list = all.filter(groups[filter]).sort((a, b) => b.createdAt - a.createdAt);
@@ -19,11 +26,11 @@ export default async function tasks(ctx) {
       <div class="seg mb-16">${Object.keys(groups).map((g) => `<button data-g="${g}" class="${g === filter ? 'active' : ''}">${g[0].toUpperCase() + g.slice(1)} (${all.filter(groups[g]).length})</button>`).join('')}</div>
       <div class="grid-2" style="grid-template-columns: 1fr 320px; align-items:start">
         <div class="card">${list.length ? `<div class="table-wrap"><table class="log-table"><thead><tr><th>Task</th><th>Employee</th><th>Progress</th><th>Created</th><th>Status</th></tr></thead><tbody>
-          ${list.slice(0, 300).map((t) => `<tr class="clickable" data-open="${t.id}"><td><div class="small strong">${esc(t.title)}</div><div class="tiny muted">${esc(t.trigger)}${t.origin === 'extension' ? ' · extension' : ''}${t.error ? ` · <span class="s-err">${esc(t.error.slice(0, 80))}</span>` : ''}</div></td>
+          ${list.slice(0, 300).map((t) => { const sys = tabSystem(t, connections); return `<tr class="clickable" data-open="${t.id}"><td><div class="row gap-6">${sys ? sysIcon(sys.id, true, sys.name) : ''}<div class="small strong">${esc(t.title)}</div></div><div class="tiny muted">${esc(t.trigger)}${sys ? ` · in ${esc(sys.name)}` : ''}${t.origin === 'extension' ? ' · extension' : ''}${t.error ? ` · <span class="s-err">${esc(t.error.slice(0, 80))}</span>` : ''}</div></td>
             <td><div class="row gap-6">${empById[t.employeeId] ? avatar(empById[t.employeeId], 'avatar-sm') : ''}<span class="small">${esc(empById[t.employeeId]?.name || 'Deleted')}</span></div></td>
             <td class="small">${t.scriptRuns.length} script${t.scriptRuns.length === 1 ? '' : 's'}${t.current ? ` · <span class="s-run">${esc(empById[t.employeeId]?.scripts.find((s) => s.id === t.current.scriptId)?.name || '')}</span>` : ''}</td>
-            <td class="small muted">${timeAgo(t.createdAt)}</td><td>${statusBadge(t.status)}</td></tr>`).join('')}
-        </tbody></table></div>` : emptyState('list-checks', 'No tasks', 'Run an employee from its profile, schedule it, or start it in a browser tab with the extension.')}</div>
+            <td class="small muted">${timeAgo(t.createdAt)}</td><td>${statusBadge(t.status)}</td></tr>`; }).join('')}
+        </tbody></table></div>` : emptyState('list-checks', 'No tasks', 'Run an employee from its profile, schedule it, or start it from the WorkForge extension in one of your systems.')}</div>
         <div class="card"><div class="card-head"><h3>${icon('calendar-clock')} Scheduled follow-ups</h3></div><div class="card-body">
           ${upcoming.length ? `<div class="feed">${upcoming.map((s) => `<div class="feed-item"><div class="grow"><div class="small strong">${esc(empById[s.employeeId]?.name || '')}</div><div class="small">${esc(s.instruction)}</div><div class="time">${fmtDateTime(s.runAt)} (${timeAgo(s.runAt)})</div></div><button class="btn btn-xs btn-ghost" data-cancel-sched="${s.id}" title="Cancel">${icon('x')}</button></div>`).join('')}</div>` : '<p class="small muted">Follow-ups scheduled by employees (schedule_followup) appear here. They run while WorkForge is open in a tab.</p>'}
         </div></div>
@@ -48,7 +55,8 @@ async function taskDetail(ctx) {
     if (!ctx.isCurrent()) return;
     const task = await app.db.get('tasks', params.id);
     if (!task) { page.innerHTML = emptyState('list-checks', 'Task not found', 'It may have been deleted.'); return; }
-    const employee = await app.db.get('employees', task.employeeId);
+    const [employee, connections] = await Promise.all([app.db.get('employees', task.employeeId), app.getConnections()]);
+    const sys = tabSystem(task, connections);
     const act = (await app.db.byIndex('activity', 'taskId', task.id)).sort((a, b) => a.ts - b.ts);
     const current = task.current && employee ? employee.scripts.find((s) => s.id === task.current.scriptId) : null;
     const live = ['running', 'queued', 'waiting_approval', 'paused'].includes(task.status);
@@ -59,7 +67,9 @@ async function taskDetail(ctx) {
       ${task.error ? `<div class="callout danger mb-16">${icon('alert-triangle')}<div class="small">${esc(task.error)}</div></div>` : ''}
       <div class="grid-2" style="grid-template-columns: 1fr 1.3fr; align-items:start">
         <div class="col gap-16">
-          <div class="card card-pad"><h3>Input</h3><pre class="light mt-8">${esc(task.input || '(none)')}</pre>${task.browser ? `<p class="small muted mt-8">${icon('globe')} Browser tab: ${esc(task.browser.title || '')} ${esc(task.browser.url || '')}</p>` : ''}</div>
+          <div class="card card-pad"><h3>Input</h3><pre class="light mt-8">${esc(task.input || '(none)')}</pre>
+            ${task.browser?.url ? `<div class="row-top gap-8 mt-12">${sys ? sysIcon(sys.id, false, sys.name) : sysIcon('browser')}<div class="grow" style="min-width:0"><div class="tiny muted">Working tab${sys ? ` · ${esc(sys.name)}` : ` · ${esc(hostOf(task.browser.url))}`}</div>${task.browser.title ? `<div class="small strong ellipsis">${esc(task.browser.title)}</div>` : ''}<a class="tiny mono ellipsis" style="display:block" href="${esc(task.browser.url)}" target="_blank" rel="noopener">${esc(task.browser.url)}</a></div></div>`
+    : `<p class="tiny muted mt-8">${icon('globe')} No working tab yet — the employee opens one with browser_open when it needs a system.</p>`}</div>
           <div class="card"><div class="card-head"><h3>Script execution</h3><span class="small muted">${task.steps} step${task.steps === 1 ? '' : 's'}</span></div><div class="card-body col">
             ${task.scriptRuns.map((r, i) => `<div class="script-card"><div class="between"><div class="row"><span class="num">${i + 1}</span><strong class="small">${esc(r.name)}</strong></div>${statusBadge(r.status === 'success' ? 'success' : r.status === 'failed' ? 'failed' : 'needs_attention', r.status)}</div>
               <div class="small">${esc(r.summary)}</div>${r.reason ? `<div class="tiny muted">Next-step reason: ${esc(r.reason)}</div>` : ''}
