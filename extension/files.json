@@ -1,0 +1,28 @@
+{
+  "files": [
+    "background.js",
+    "bridge.js",
+    "browser-tools.js",
+    "core/ai.js",
+    "core/catalog.js",
+    "core/db.js",
+    "core/employee.js",
+    "core/generator.js",
+    "core/memory.js",
+    "core/modifier.js",
+    "core/reports.js",
+    "core/runtime.js",
+    "core/tools.js",
+    "core/util.js",
+    "icons/icon128.png",
+    "icons/icon16.png",
+    "icons/icon32.png",
+    "icons/icon48.png",
+    "manifest.json",
+    "pair.html",
+    "pair.js",
+    "sidepanel.css",
+    "sidepanel.html",
+    "sidepanel.js"
+  ]
+}
