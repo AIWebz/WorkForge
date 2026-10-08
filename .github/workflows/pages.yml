@@ -1,4 +1,4 @@
-name: Deploy WorkForce to GitHub Pages
+name: Deploy WorkForge to GitHub Pages
 
 on:
   push:

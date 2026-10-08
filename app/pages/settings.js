@@ -105,7 +105,7 @@ async function aiSection(host) {
     <div class="card card-pad">${vault.locked ? `<div class="callout warn mb-16">${icon('lock')}<div>The credential vault is locked. <button class="link-btn" id="unlock">Unlock</button></div></div>` : ''}${aiFormHtml(cfg, !!vault.get('ai.apiKey'))}</div>
     <div class="card card-pad col">
       <h3>${icon('cpu')} How the AI engine runs</h3>
-      <p class="small muted">WorkForce is a static web app. The AI engine runs in this browser tab and calls your model provider directly with your key — there is no WorkForce server in between.</p>
+      <p class="small muted">WorkForge is a static web app. The AI engine runs in this browser tab and calls your model provider directly with your key — there is no WorkForge server in between.</p>
       <ul class="small muted" style="padding-left:18px;margin:0">
         <li>Generation: requirement analysis + architecture design calls.</li>
         <li>Execution: one model turn per step; tools run locally or against your connected systems.</li>
@@ -187,21 +187,21 @@ function dataSection(host, navigate) {
     </div>
     <div class="card card-pad form-grid">
       <h3 style="color:var(--danger)">${icon('trash-2')} Danger zone</h3>
-      <p class="small muted">Delete all WorkForce data stored in this browser, including credentials.</p>
+      <p class="small muted">Delete all WorkForge data stored in this browser, including credentials.</p>
       <div><button class="btn btn-danger" id="wipe">Delete all data</button></div>
     </div>
   </div>`;
   host.querySelector('#export').onclick = async () => {
-    const out = { app: 'workforce', version: 1, exportedAt: new Date().toISOString(), stores: {} };
+    const out = { app: 'workforge', version: 1, exportedAt: new Date().toISOString(), stores: {} };
     for (const s of STORE_NAMES) out.stores[s] = await app.db.all(s);
-    download(`workforce-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(out));
+    download(`workforge-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(out));
   };
   host.querySelector('#import').onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (data.app !== 'workforce' || !data.stores) throw new Error('Not a WorkForce backup');
+      if (data.app !== 'workforge' || !data.stores) throw new Error('Not a WorkForge backup');
       if (!(await confirmDialog('Import will merge the backup into your current data (records with the same id are replaced).', { confirm: 'Import' }))) return;
       for (const s of STORE_NAMES) if (Array.isArray(data.stores[s])) await app.db.bulkPut(s, data.stores[s]);
       await app.load();

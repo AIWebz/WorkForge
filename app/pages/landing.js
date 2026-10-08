@@ -16,7 +16,7 @@ export default async function landing({ el, app }) {
   const cta = started ? '#/create' : '#/onboarding';
   el.innerHTML = `<div class="landing">
     <nav class="l-nav">
-      <a class="logo" href="#/"><img src="assets/img/logo.svg" alt="">WorkForce</a>
+      <a class="logo" href="#/"><img src="assets/img/logo.svg" alt="">WorkForge</a>
       <div class="l-links">
         <a href="#how">Product</a><a href="#features">AI Employees</a><a href="#/integrations">Integrations</a><a href="#/extension">Extension</a><a href="#architecture">Architecture</a>
       </div>
@@ -30,16 +30,16 @@ export default async function landing({ el, app }) {
       <div>
         <span class="eyebrow">${icon('sparkles')} The future of work is AI employees</span>
         <h1>Build the AI Employee Your Business Actually Needs.</h1>
-        <p class="lead">Describe the work. The WorkForce AI engine generates the employee — scripts, tools, memory, workflows and permissions — then runs it for you.</p>
+        <p class="lead">Describe the work. The WorkForge AI engine generates the employee — scripts, tools, memory, workflows and permissions — then runs it for you.</p>
         <div class="row mt-24 wrap">
           <a class="btn btn-primary btn-lg" href="${cta}">Create an Employee</a>
           <a class="btn btn-lg" href="#how">${icon('play')} See How It Works</a>
         </div>
         <p class="small muted mt-16">Runs entirely in your browser. Bring your own AI key — your data stays on your device.</p>
       </div>
-      <div class="preview" aria-label="Illustration of the WorkForce app">
+      <div class="preview" aria-label="Illustration of the WorkForge app">
         <div class="pv-side">
-          <div class="strong" style="color:var(--text)"><img src="assets/img/logo.svg" width="14" alt="">WorkForce</div>
+          <div class="strong" style="color:var(--text)"><img src="assets/img/logo.svg" width="14" alt="">WorkForge</div>
           <div>${icon('layout-dashboard')}Overview</div><div>${icon('users')}Employees</div><div class="on">${icon('plus')}Create Employee</div>
           <div>${icon('activity')}Activity</div><div>${icon('list-checks')}Tasks</div><div>${icon('folder')}Files</div><div>${icon('server')}Systems</div>
           <div>${icon('blocks')}Integrations</div><div>${icon('puzzle')}Browser Extension</div><div>${icon('bar-chart-3')}Reports</div>
@@ -64,7 +64,7 @@ export default async function landing({ el, app }) {
 
     <section id="how" class="l-section" style="padding-top:10px">
       <div class="l-steps">
-        ${[['1', 'Describe', 'Tell WorkForce what you need in plain language. No technical details.', 'message-square', 'Business request'],
+        ${[['1', 'Describe', 'Tell WorkForge what you need in plain language. No technical details.', 'message-square', 'Business request'],
     ['2', 'Generate', 'The AI engine designs a custom employee: scripts, decision logic, tools, memory and permissions.', 'sparkles', 'AI generated employee'],
     ['3', 'Operate', 'Your employee works across your systems and browser tabs — with approvals where it matters.', 'zap', 'Real work, real results']]
     .map(([n, t, d, ic, chip]) => `<div class="l-step"><div class="big">${n}</div><div><h3>${t}</h3><p class="small muted mt-4">${d}</p><span class="chip mt-12">${icon(ic)}${chip}</span></div></div>`).join('')}
@@ -86,17 +86,17 @@ export default async function landing({ el, app }) {
         ${['Request', 'AI Engine', 'Generated Scripts', 'Tools · Files · Systems · Browser', 'Result', 'AI Evaluation', 'Next Script'].map((b, i, a) => `<span class="box">${b}</span>${i < a.length - 1 ? icon('arrow-right') : ''}`).join('')}
       </div>
       <div class="grid-3 mt-24">
-        <div class="card card-pad"><h3>${icon('lock')} Your keys, your browser</h3><p class="small muted mt-8">WorkForce is a static app. API keys are kept in an optional passphrase-encrypted vault in your browser and sent only to the provider you choose.</p></div>
+        <div class="card card-pad"><h3>${icon('lock')} Your keys, your browser</h3><p class="small muted mt-8">WorkForge is a static app. API keys are kept in an optional passphrase-encrypted vault in your browser and sent only to the provider you choose.</p></div>
         <div class="card card-pad"><h3>${icon('shield-check')} Human in the loop</h3><p class="small muted mt-8">Emails, CRM writes, bookings and browser clicks wait in the Approval Center until you approve, edit or reject them.</p></div>
         <div class="card card-pad"><h3>${icon('git-branch')} Hosted on GitHub</h3><p class="small muted mt-8">No servers, no build step. Publish with GitHub Pages; load the extension from the same repository.</p></div>
       </div>
     </section>
 
     <section class="l-section" style="text-align:center">
-      <h2 style="font-size:28px">Describe the employee. WorkForce builds the entire system.</h2>
+      <h2 style="font-size:28px">Describe the employee. WorkForge builds the entire system.</h2>
       <a class="btn btn-primary btn-lg mt-24" href="${cta}">Build Your First AI Employee ${icon('arrow-right')}</a>
     </section>
-    <footer class="l-foot"><span>© ${new Date().getFullYear()} WorkForce</span><span>Static app · data stored locally in your browser</span></footer>
+    <footer class="l-foot"><span>© ${new Date().getFullYear()} WorkForge</span><span>Static app · data stored locally in your browser</span></footer>
   </div>`;
   el.querySelectorAll('a[href^="#"]:not([href^="#/"])').forEach((a) => {
     a.addEventListener('click', (e) => {

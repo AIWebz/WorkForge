@@ -1,4 +1,4 @@
-// Shared utilities used by the WorkForce web app and the browser extension.
+// Shared utilities used by the WorkForge web app and the browser extension.
 
 export const uid = (prefix = 'id') =>
   `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;

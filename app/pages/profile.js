@@ -85,7 +85,7 @@ export async function runTaskDialog(app, employee, { input = '' } = {}) {
     body: `<div class="form-grid">
       <label class="field"><span>Instruction</span><textarea class="textarea" id="rt-input" rows="5" placeholder="e.g. Process the new lead: Jane Doe, jane@acme.io, VP Sales at Acme (acme.io)">${esc(input)}</textarea></label>
       <label class="field"><span>Entry point</span><select class="select" id="rt-entry">${entries.map((e) => `<option value="${e.value}" ${e.entry === employee.entryScript && e.value.startsWith('scr') ? 'selected' : ''}>${esc(e.label)}</option>`).join('')}</select></label>
-      ${employee.browser?.enabled ? `<label class="field"><span>Browser tab</span>${bridge.paired ? `<select class="select" id="rt-tab"><option value="">No browser tab</option>${tabs.map((t) => `<option value="${t.id}">${esc(t.title || t.url).slice(0, 80)} — ${esc(new URL(t.url).host)}</option>`).join('')}</select><span class="help">The employee can read and act in this tab within its browser permissions.</span>` : '<span class="help">Install and connect the WorkForce extension to let this employee work in a browser tab.</span>'}</label>` : ''}
+      ${employee.browser?.enabled ? `<label class="field"><span>Browser tab</span>${bridge.paired ? `<select class="select" id="rt-tab"><option value="">No browser tab</option>${tabs.map((t) => `<option value="${t.id}">${esc(t.title || t.url).slice(0, 80)} — ${esc(new URL(t.url).host)}</option>`).join('')}</select><span class="help">The employee can read and act in this tab within its browser permissions.</span>` : '<span class="help">Install and connect the WorkForge extension to let this employee work in a browser tab.</span>'}</label>` : ''}
       ${employee.status === 'draft' ? `<div class="callout warn">${icon('flask-conical')}<div class="small">${esc(employee.name)} is a draft — this run is a real test run with real tools and approvals.</div></div>` : ''}
     </div>`,
     actions: [
@@ -99,7 +99,7 @@ export async function runTaskDialog(app, employee, { input = '' } = {}) {
           const t = tabs.find((x) => x.id === tabId);
           const origin = new URL(t.url).origin;
           const g = await bridge.grantHosts([`${origin}/*`]);
-          if (!g.granted) throw new Error(`Approve access to ${new URL(origin).host} in the WorkForce extension window, then click Run task again.`);
+          if (!g.granted) throw new Error(`Approve access to ${new URL(origin).host} in the WorkForge extension window, then click Run task again.`);
           browser = { tabId, url: t.url, title: t.title, origin };
         }
         if (employee.status === 'paused') throw new Error(`${employee.name} is paused. Resume it first.`);
@@ -131,7 +131,7 @@ async function overview({ host, app, employee }) {
       <div class="card"><div class="card-head"><h3>Triggers &amp; schedules</h3><button class="btn btn-sm" id="add-trigger">${icon('plus')} Add schedule</button></div>
         <div class="card-body col">${employee.triggers.map((t) => `<div class="between"><div class="row">${icon(t.type === 'schedule' ? 'clock' : t.type === 'browser' ? 'globe' : 'mouse-pointer-click')}<div><div class="small strong">${esc(t.label)}</div><div class="tiny muted">${t.type === 'schedule' ? (t.schedule.everyMinutes ? `Every ${t.schedule.everyMinutes} min` : `Daily at ${t.schedule.dailyAt}`) + (t.enabled && t.nextRunAt ? ` · next ${timeAgo(t.nextRunAt)}` : '') : t.type === 'browser' ? 'Started from the browser extension' : 'Run on demand'}${t.input ? ` · “${esc(truncate(t.input, 70))}”` : ''}</div></div></div>
           <div class="row">${t.type === 'schedule' ? `<label class="toggle" title="Enable schedule"><input type="checkbox" data-trg-toggle="${t.id}" ${t.enabled ? 'checked' : ''}><span></span></label><button class="btn btn-xs btn-ghost" data-trg-del="${t.id}">${icon('trash-2')}</button>` : ''}</div></div>`).join('')}
-          <p class="help">Schedules run while WorkForce is open in a browser tab (static hosting has no server). Follow-ups scheduled by the employee appear under Tasks.</p>
+          <p class="help">Schedules run while WorkForge is open in a browser tab (static hosting has no server). Follow-ups scheduled by the employee appear under Tasks.</p>
         </div></div>
       <div class="card"><div class="card-head"><h3>Version history</h3><span class="small muted">Current v${employee.version}</span></div><div class="card-body col">
         ${versions.length ? versions.sort((a, b) => b.createdAt - a.createdAt).slice(0, 8).map((v) => `<div class="between"><div><div class="small strong">v${v.version} <span class="muted" style="font-weight:400">· ${fmtDateTime(v.createdAt)}</span></div><div class="tiny muted">${esc(truncate(v.reason, 110))}</div></div><button class="btn btn-xs" data-restore="${v.id}">${icon('rotate-ccw')} Restore</button></div>`).join('') : '<p class="small muted">Changes made through Chat, the script editor or Permissions are versioned here.</p>'}

@@ -24,7 +24,7 @@ export default async function employees(ctx) {
     el.querySelector('#import').onchange = async (e) => {
       try {
         const data = JSON.parse(await e.target.files[0].text());
-        if (!data.scripts) throw new Error('Not a WorkForce employee export');
+        if (!data.scripts) throw new Error('Not a WorkForge employee export');
         const emp = normalizeEmployee(data, { request: data.request || '' });
         Object.assign(emp, { permissions: data.permissions || emp.permissions, browser: data.browser || emp.browser, collections: [], status: 'draft', id: uid('emp') });
         await app.db.put('employees', emp);

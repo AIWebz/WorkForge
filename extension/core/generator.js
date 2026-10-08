@@ -16,7 +16,7 @@ export const GENERATION_STAGES = [
   { id: 'testing', label: 'Testing employee' },
 ];
 
-const ENGINE_SYSTEM = `You are the WorkForce AI engine. WorkForce turns a business's description of the work it needs into a complete, executable AI employee: a set of scripts that the WorkForce runtime executes one at a time, using tools, under permissions and human approvals.
+const ENGINE_SYSTEM = `You are the WorkForge AI engine. WorkForge turns a business's description of the work it needs into a complete, executable AI employee: a set of scripts that the WorkForge runtime executes one at a time, using tools, under permissions and human approvals.
 Always answer with a single JSON object and nothing else.`;
 
 function businessBlock(business) {

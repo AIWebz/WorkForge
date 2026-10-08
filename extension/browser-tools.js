@@ -28,7 +28,7 @@ export async function runBrowserAction(tabId, action, args = {}) {
   let tab;
   try { tab = await chrome.tabs.get(tabId); } catch { throw new Error('The working tab was closed.'); }
   if (!/^https?:/.test(tab.url || '')) throw new Error('Employees can only work on http(s) pages.');
-  if (!(await hasHostAccess(tab.url))) throw new Error(`WorkForce has no access to ${new URL(tab.url).host}. Grant it from the WorkForce side panel (Start Working asks for it).`);
+  if (!(await hasHostAccess(tab.url))) throw new Error(`WorkForge has no access to ${new URL(tab.url).host}. Grant it from the WorkForge side panel (Start Working asks for it).`);
 
   switch (action) {
     case 'read_page': return exec(tabId, readPage);
@@ -45,7 +45,7 @@ export async function runBrowserAction(tabId, action, args = {}) {
     case 'navigate': {
       const url = String(args.url || '');
       if (!/^https?:\/\//.test(url)) throw new Error('Only http(s) URLs');
-      if (!(await hasHostAccess(url))) throw new Error(`WorkForce has no access to ${new URL(url).host}. Add the site in the side panel before navigating there.`);
+      if (!(await hasHostAccess(url))) throw new Error(`WorkForge has no access to ${new URL(url).host}. Add the site in the side panel before navigating there.`);
       await chrome.tabs.update(tabId, { url });
       await new Promise((res) => setTimeout(res, 400));
       await waitForComplete(tabId);

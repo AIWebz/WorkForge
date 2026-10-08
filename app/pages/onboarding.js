@@ -20,7 +20,7 @@ export default async function onboarding({ el, app, navigate }) {
   const render = async () => {
     const s = state.step;
     el.innerHTML = `<div class="onb"><div class="onb-card">
-      <a class="logo" href="#/"><img src="assets/img/logo.svg" alt="">WorkForce</a>
+      <a class="logo" href="#/"><img src="assets/img/logo.svg" alt="">WorkForge</a>
       <h1 style="margin-top:22px;font-size:28px">Let's build your first employee.</h1>
       <div class="stepper">${STEPS.map((label, i) => `<div class="st ${i === s ? 'active' : i < s ? 'done' : ''}"><span class="n">${i < s ? '✓' : i + 1}</span><span class="lbl">${label}</span></div>${i < STEPS.length - 1 ? '<div class="line"></div>' : ''}`).join('')}</div>
       <div id="step"></div>
@@ -81,7 +81,7 @@ export default async function onboarding({ el, app, navigate }) {
     const cfg = await app.db.getSetting('ai', {});
     const conns = await app.connectionMap();
     host.innerHTML = `<div class="form-grid">
-      <div><h3>${icon('cpu')} Connect the AI engine</h3><p class="small muted mt-4">WorkForce runs in your browser and uses your own model provider key. It is stored in your local credential vault — never in the repository.</p></div>
+      <div><h3>${icon('cpu')} Connect the AI engine</h3><p class="small muted mt-4">WorkForge runs in your browser and uses your own model provider key. It is stored in your local credential vault — never in the repository.</p></div>
       ${app.vault.locked ? `<div class="callout warn">${icon('lock')}<div>Vault locked. <button class="link-btn" id="unlock">Unlock</button></div></div>` : ''}
       <div class="card card-pad" style="background:var(--surface-2)">${aiFormHtml(cfg, !!app.vault.get('ai.apiKey'))}</div>
       <div><h3>${icon('plug')} Business systems</h3><p class="small muted mt-4">Optional now — you can connect them any time from Integrations. Employees will ask for approval before acting in them.</p>

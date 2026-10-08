@@ -25,7 +25,7 @@ export default async function tasks(ctx) {
             <td class="small muted">${timeAgo(t.createdAt)}</td><td>${statusBadge(t.status)}</td></tr>`).join('')}
         </tbody></table></div>` : emptyState('list-checks', 'No tasks', 'Run an employee from its profile, schedule it, or start it in a browser tab with the extension.')}</div>
         <div class="card"><div class="card-head"><h3>${icon('calendar-clock')} Scheduled follow-ups</h3></div><div class="card-body">
-          ${upcoming.length ? `<div class="feed">${upcoming.map((s) => `<div class="feed-item"><div class="grow"><div class="small strong">${esc(empById[s.employeeId]?.name || '')}</div><div class="small">${esc(s.instruction)}</div><div class="time">${fmtDateTime(s.runAt)} (${timeAgo(s.runAt)})</div></div><button class="btn btn-xs btn-ghost" data-cancel-sched="${s.id}" title="Cancel">${icon('x')}</button></div>`).join('')}</div>` : '<p class="small muted">Follow-ups scheduled by employees (schedule_followup) appear here. They run while WorkForce is open in a tab.</p>'}
+          ${upcoming.length ? `<div class="feed">${upcoming.map((s) => `<div class="feed-item"><div class="grow"><div class="small strong">${esc(empById[s.employeeId]?.name || '')}</div><div class="small">${esc(s.instruction)}</div><div class="time">${fmtDateTime(s.runAt)} (${timeAgo(s.runAt)})</div></div><button class="btn btn-xs btn-ghost" data-cancel-sched="${s.id}" title="Cancel">${icon('x')}</button></div>`).join('')}</div>` : '<p class="small muted">Follow-ups scheduled by employees (schedule_followup) appear here. They run while WorkForge is open in a tab.</p>'}
         </div></div>
       </div>`;
     page.querySelectorAll('[data-g]').forEach((b) => b.onclick = () => { filter = b.dataset.g; render(); });

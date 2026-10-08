@@ -72,7 +72,7 @@ export default async function activity(ctx) {
     bindActivityRows(page, rows.slice(0, limit));
     page.querySelectorAll('[data-f]').forEach((i) => i.addEventListener(i.tagName === 'INPUT' ? 'change' : 'change', () => { f[i.dataset.f] = i.value; render(); }));
     page.querySelector('#more')?.addEventListener('click', () => { limit += 200; render(); });
-    page.querySelector('#export').onclick = () => download(`workforce-activity-${Date.now()}.json`, JSON.stringify(rows, null, 2));
+    page.querySelector('#export').onclick = () => download(`workforge-activity-${Date.now()}.json`, JSON.stringify(rows, null, 2));
     refreshIcons();
   };
   ctx.watch(['activity'], render, 800);

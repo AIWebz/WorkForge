@@ -11,7 +11,7 @@ import { vault } from './vault.js';
 import { bridge } from './bridge.js';
 import { toast } from './ui.js';
 
-export const db = new DB('workforce');
+export const db = new DB('workforge');
 export const events = new Emitter();
 
 export const app = {
@@ -75,7 +75,7 @@ export const transport = {
   async fetch(url, init = {}, { mode = 'direct' } = {}) {
     const host = new URL(url).host;
     if (mode === 'relay') {
-      if (!bridge.paired) throw new Error(`${host} does not accept requests from web pages (CORS). Install and connect the WorkForce extension (Browser Extension page) so it can relay this call.`);
+      if (!bridge.paired) throw new Error(`${host} does not accept requests from web pages (CORS). Install and connect the WorkForge extension (Browser Extension page) so it can relay this call.`);
       return relay(url, init);
     }
     try {
@@ -83,7 +83,7 @@ export const transport = {
       return { ok: res.ok, status: res.status, text: () => res.text() };
     } catch (e) {
       if (mode === 'direct-or-relay' && bridge.paired) return relay(url, init);
-      throw new Error(`The request to ${host} was blocked by the browser (CORS or network).${bridge.paired ? '' : ' Connect the WorkForce extension to relay requests to services that block browsers.'}`);
+      throw new Error(`The request to ${host} was blocked by the browser (CORS or network).${bridge.paired ? '' : ' Connect the WorkForge extension to relay requests to services that block browsers.'}`);
     }
   },
 };
@@ -94,7 +94,7 @@ export const executor = createToolExecutor({
   transport,
   browser: {
     async exec(action, args, { task }) {
-      if (!bridge.paired) throw new Error('Browser tools need the WorkForce extension to be installed and connected.');
+      if (!bridge.paired) throw new Error('Browser tools need the WorkForge extension to be installed and connected.');
       return bridge.browserAction(task.browser.tabId, action, args);
     },
   },
@@ -157,7 +157,7 @@ export function startBackground() {
     schedulerTick();
   };
   if (navigator.locks?.request) {
-    navigator.locks.request('workforce-leader', () => { becomeLeader(); return new Promise(() => {}); });
+    navigator.locks.request('workforge-leader', () => { becomeLeader(); return new Promise(() => {}); });
   } else becomeLeader();
   setInterval(schedulerTick, 20000);
   vault.onChange(() => { if (!vault.locked && app.isLeader) runtime.recover(); });

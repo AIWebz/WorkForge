@@ -83,7 +83,7 @@ export function openConnectDialog(app, id) {
     const cfg = existing?.config || {};
     const secrets = app.vault.get(`conn.${id}`) || {};
     const relayNote = def.transport === 'relay'
-      ? `<div class="callout ${bridge.paired ? 'success' : 'warn'}">${icon('puzzle')}<div class="small">${esc(def.name)} blocks requests from web pages, so WorkForce relays calls through the browser extension. ${bridge.paired ? 'Extension connected ✓' : '<a href="#/extension">Install and connect the extension</a> before testing.'}</div></div>`
+      ? `<div class="callout ${bridge.paired ? 'success' : 'warn'}">${icon('puzzle')}<div class="small">${esc(def.name)} blocks requests from web pages, so WorkForge relays calls through the browser extension. ${bridge.paired ? 'Extension connected ✓' : '<a href="#/extension">Install and connect the extension</a> before testing.'}</div></div>`
       : def.transport === 'direct-or-relay' ? `<p class="help">Calls go directly from your browser when the service allows it (CORS); otherwise through the extension relay${bridge.paired ? ' (connected)' : ''}.</p>` : '';
     modal({
       title: `Connect ${def.name}`,

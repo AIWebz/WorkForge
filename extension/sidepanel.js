@@ -1,4 +1,4 @@
-// WorkForce side panel: choose an employee, choose a tab, start working.
+// WorkForge side panel: choose an employee, choose a tab, start working.
 // Runs the same core runtime as the web app with the browser tool bound to the
 // selected tab.
 import { DB } from './core/db.js';
@@ -8,7 +8,7 @@ import { PROVIDERS, isConfigured } from './core/ai.js';
 import { uid, now } from './core/util.js';
 import { runBrowserAction } from './browser-tools.js';
 
-const db = new DB('workforce-ext');
+const db = new DB('workforge-ext');
 const view = document.getElementById('view');
 const statusEl = document.getElementById('status');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -70,7 +70,7 @@ async function renderHome() {
   const employees = (await db.all('employees')).sort((a, b) => a.name.localeCompare(b.name));
   const { ai } = await session();
   if (!employees.length) {
-    view.innerHTML = `<div class="card empty"><h2>No employees yet</h2><p class="small">Open your WorkForce app → <strong>Browser Extension</strong> → <strong>Connect extension</strong>. Your employees sync here automatically.</p></div>`;
+    view.innerHTML = `<div class="card empty"><h2>No employees yet</h2><p class="small">Open your WorkForge app → <strong>Browser Extension</strong> → <strong>Connect extension</strong>. Your employees sync here automatically.</p></div>`;
     return;
   }
   const emp = employees.find((e) => e.id === state.employeeId);
@@ -115,7 +115,7 @@ function start(emp, tab) {
   const origins = [`${origin}/*`, ...(emp.browser.domains || []).flatMap((d) => [`https://${d}/*`, `https://*.${d}/*`])];
   // permissions.request must be the first async call inside the click so Chrome treats it as a user gesture.
   chrome.permissions.request({ origins }).then((granted) => {
-    if (!granted) { alert(`WorkForce needs access to ${new URL(tab.url).host} for ${emp.name} to work there.`); return; }
+    if (!granted) { alert(`WorkForge needs access to ${new URL(tab.url).host} for ${emp.name} to work there.`); return; }
     return launch(emp, tab, origin);
   }).catch((e) => alert(e.message));
 }
@@ -191,9 +191,9 @@ async function renderSettings() {
   const optional = (perms.origins || []).filter((o) => !required.has(o));
   const webAll = optional.includes('https://*/*');
   const provider = ai?.provider || 'anthropic';
-  view.innerHTML = `<div class="card"><h2>Connected WorkForce apps</h2>
-      ${pairedOrigins.length ? pairedOrigins.map((o) => `<div class="between small" style="padding:4px 0"><span class="ellipsis">${esc(o)}</span><button class="btn sm danger" data-unpair="${esc(o)}">Remove</button></div>`).join('') : '<p class="small muted">None. Open your WorkForce app → Browser Extension → Connect extension.</p>'}
-      <label class="field">Add WorkForce app address (custom domain)<input id="custom" placeholder="https://workforce.example.com"></label>
+  view.innerHTML = `<div class="card"><h2>Connected WorkForge apps</h2>
+      ${pairedOrigins.length ? pairedOrigins.map((o) => `<div class="between small" style="padding:4px 0"><span class="ellipsis">${esc(o)}</span><button class="btn sm danger" data-unpair="${esc(o)}">Remove</button></div>`).join('') : '<p class="small muted">None. Open your WorkForge app → Browser Extension → Connect extension.</p>'}
+      <label class="field">Add WorkForge app address (custom domain)<input id="custom" placeholder="https://workforce.example.com"></label>
       <button class="btn sm" id="add-custom" style="margin-top:6px">Add address</button>
       ${customOrigins.length ? `<p class="tiny muted" style="margin-top:6px">Custom: ${customOrigins.map(esc).join(', ')}</p>` : ''}
     </div>

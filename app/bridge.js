@@ -1,4 +1,4 @@
-// Page-side bridge to the WorkForce browser extension. The extension's content
+// Page-side bridge to the WorkForge browser extension. The extension's content
 // script (extension/bridge.js) relays these messages to its background worker,
 // which only serves origins the user explicitly paired.
 import { Emitter, uid } from '../extension/core/util.js';

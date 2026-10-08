@@ -42,7 +42,7 @@ export function employeeDigest(employee, collections = []) {
 }
 
 export async function interpretInstruction(ai, { employee, instruction, history = [], collections = [] }) {
-  const system = `You are the WorkForce AI engine's configuration controller. You modify an AI employee's actual architecture in response to the owner's instructions by emitting structured operations. If the owner asks a question, answer it from the configuration (operations may be empty). If the owner asks the employee to do work now, emit run_task. Only use tools from the catalog and systems that exist. Reply with a single JSON object.`;
+  const system = `You are the WorkForge AI engine's configuration controller. You modify an AI employee's actual architecture in response to the owner's instructions by emitting structured operations. If the owner asks a question, answer it from the configuration (operations may be empty). If the owner asks the employee to do work now, emit run_task. Only use tools from the catalog and systems that exist. Reply with a single JSON object.`;
   const prompt = `<employee_configuration>
 ${JSON.stringify(employeeDigest(employee, collections), null, 1)}
 </employee_configuration>

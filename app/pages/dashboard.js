@@ -45,7 +45,7 @@ export default async function dashboard(ctx) {
       <div class="grid-2 mt-24" style="grid-template-columns: 1fr 340px; align-items:start">
         <div class="card">
           <div class="card-head"><div><h3><span class="status-dot" style="background:var(--success)"></span> Live Workforce</h3><div class="tiny muted">${working} employee${working === 1 ? '' : 's'} active right now</div></div><a class="small" href="#/employees">View all</a></div>
-          <div class="card-body">${employees.length ? `<div class="grid-3">${employees.map((e) => employeeCard(e, live(e.id) || lastTask(e.id))).join('')}</div>` : emptyState('users', 'No employees yet', 'Describe the work you need done and WorkForce will generate a complete AI employee.', '<a class="btn btn-primary" href="#/create">Create Employee</a>')}</div>
+          <div class="card-body">${employees.length ? `<div class="grid-3">${employees.map((e) => employeeCard(e, live(e.id) || lastTask(e.id))).join('')}</div>` : emptyState('users', 'No employees yet', 'Describe the work you need done and WorkForge will generate a complete AI employee.', '<a class="btn btn-primary" href="#/create">Create Employee</a>')}</div>
         </div>
         <div class="card">
           <div class="card-head"><h3>Recent Activity</h3><a class="small" href="#/activity">View all</a></div>

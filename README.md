@@ -1,8 +1,8 @@
-# WorkForce
+# WorkForge
 
-**Describe the employee. WorkForce builds the entire system.**
+**Describe the employee. WorkForge builds the entire system.**
 
-WorkForce is a static web app plus a browser extension. You describe the AI employee your business needs. The AI engine then generates that employee's architecture (scripts, decision logic, tools, memory, permissions and triggers) and runs it against your real systems and browser tabs. Human approval gates and a full audit log cover every action.
+WorkForge is a static web app plus a browser extension. You describe the AI employee your business needs. The AI engine then generates that employee's architecture (scripts, decision logic, tools, memory, permissions and triggers) and runs it against your real systems and browser tabs. Human approval gates and a full audit log cover every action.
 
 It runs entirely from a GitHub repository. There is no server, no build step, no Node/npm/Python, and no third-party hosting.
 
@@ -74,8 +74,8 @@ A Manifest V3 extension (Chromium 116+) that runs the **same `extension/core` mo
 
 ## Honest limitations of static hosting
 
-- **No always-on server.** Schedules and follow-ups run while WorkForce is open in a browser tab (one tab is elected leader). Browser-tab tasks run while the side panel is open.
-- **Inbound webhooks** (services pushing events to WorkForce) are impossible without a server. Use schedules that poll instead, e.g. "check Gmail every 15 minutes".
+- **No always-on server.** Schedules and follow-ups run while WorkForge is open in a browser tab (one tab is elected leader). Browser-tab tasks run while the side panel is open.
+- **Inbound webhooks** (services pushing events to WorkForge) are impossible without a server. Use schedules that poll instead, e.g. "check Gmail every 15 minutes".
 - **Google access tokens** from browser OAuth last about an hour; reconnect when they expire. You need your own OAuth Client ID, with your Pages URL as an authorized JavaScript origin.
 - **Your AI provider bills your account.** Use a key with spend limits.
 

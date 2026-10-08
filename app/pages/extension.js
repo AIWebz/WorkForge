@@ -3,11 +3,11 @@ import { bridge } from '../bridge.js';
 import { syncExtension } from '../state.js';
 
 const STEPS = [
-  ['download', 'Install the WorkForce extension', 'Download the extension package below (or use the <code>extension/</code> folder of this repository), unzip it, open <code>chrome://extensions</code>, enable <strong>Developer mode</strong> and click <strong>Load unpacked</strong>.'],
-  ['pin', 'Pin it to the browser', 'Click the puzzle icon in the toolbar and pin <strong>WorkForce</strong> so it is one click away.'],
+  ['download', 'Install the WorkForge extension', 'Download the extension package below (or use the <code>extension/</code> folder of this repository), unzip it, open <code>chrome://extensions</code>, enable <strong>Developer mode</strong> and click <strong>Load unpacked</strong>.'],
+  ['pin', 'Pin it to the browser', 'Click the puzzle icon in the toolbar and pin <strong>WorkForge</strong> so it is one click away.'],
   ['link', 'Connect it to this workspace', 'Click <strong>Connect extension</strong> on this page and approve the request. Your employees, knowledge and (optionally) credentials sync to the extension.'],
   ['globe', 'Open a website', 'Go to the site where the work happens — LinkedIn, Salesforce, Google Sheets, your admin panel…'],
-  ['users', 'Select an AI employee', 'Open the WorkForce side panel and choose which employee should work there. Only employees with browser access are available.'],
+  ['users', 'Select an AI employee', 'Open the WorkForge side panel and choose which employee should work there. Only employees with browser access are available.'],
   ['play', 'Select the tab and start', 'Choose the browser tab, describe the job, approve site access, and click <strong>Start Working</strong>.'],
 ];
 
@@ -29,7 +29,7 @@ export default async function extensionPage(ctx) {
               ${bridge.paired ? `<button class="btn btn-primary" id="sync">${icon('refresh-cw')} Sync now</button><button class="btn" id="unpair">${icon('unlink')} Disconnect</button>` : ''}
               ${!bridge.available ? `<button class="btn" id="recheck">${icon('refresh-cw')} Check again</button>` : ''}
             </div>
-            ${!bridge.available ? `<p class="help mt-12">After loading the extension, reload this page. The extension activates automatically on <code>*.github.io</code> and <code>localhost</code>. For a custom domain, open the extension side panel → Settings → “Add WorkForce app address” and enter <code>${esc(location.origin)}</code>.</p>` : ''}
+            ${!bridge.available ? `<p class="help mt-12">After loading the extension, reload this page. The extension activates automatically on <code>*.github.io</code> and <code>localhost</code>. For a custom domain, open the extension side panel → Settings → “Add WorkForge app address” and enter <code>${esc(location.origin)}</code>.</p>` : ''}
             ${bridge.paired ? `<p class="help mt-12">Credentials sharing: <strong>${app.settings.shareCredentialsWithExtension ? 'on' : 'off'}</strong> (Settings → Security). Shared secrets are kept in the extension's session storage and cleared when the browser closes.</p>` : ''}
           </div>
           <div class="card card-pad"><h3 class="mb-16">How to install and use it</h3><div class="install-steps">
@@ -42,7 +42,7 @@ export default async function extensionPage(ctx) {
             <p class="small muted">The extension is part of this repository. Chrome Web Store publishing is not possible from GitHub-only hosting, so you load it as an unpacked extension (Chrome, Edge, Brave, Arc — Chromium 116+).</p>
             <button class="btn btn-primary" id="zip">${icon('download')} Download extension (.zip)</button>
             ${ghRepo ? `<a class="btn" href="https://github.com/${esc(ghRepo)}/archive/refs/heads/main.zip">${icon('git-branch')} Download repository ZIP</a>` : ''}
-            <div class="small muted">Then: <span class="kbd">chrome://extensions</span> → Developer mode → <strong>Load unpacked</strong> → select the unzipped <code>workforce-extension</code> folder.</div>
+            <div class="small muted">Then: <span class="kbd">chrome://extensions</span> → Developer mode → <strong>Load unpacked</strong> → select the unzipped <code>workforge-extension</code> folder.</div>
           </div>
           <div class="card card-pad col">
             <h3>${icon('shield-check')} What the extension can do</h3>
@@ -96,13 +96,13 @@ async function buildZip(e) {
     await loadScript('assets/vendor/jszip.min.js');
     const list = await (await fetch('extension/files.json', { cache: 'no-store' })).json();
     const zip = new window.JSZip();
-    const folder = zip.folder('workforce-extension');
+    const folder = zip.folder('workforge-extension');
     for (const path of list.files) {
       const res = await fetch(`extension/${path}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`Missing extension file ${path}`);
       folder.file(path, await res.blob());
     }
-    download('workforce-extension.zip', await zip.generateAsync({ type: 'blob' }));
+    download('workforge-extension.zip', await zip.generateAsync({ type: 'blob' }));
     toast('Extension downloaded — unzip it and use “Load unpacked”', 'success');
   } catch (err) {
     toast(`Could not build the ZIP: ${err.message}`, 'error');

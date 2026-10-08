@@ -1,4 +1,4 @@
-// WorkForce SPA bootstrap: hash router and application shell.
+// WorkForge SPA bootstrap: hash router and application shell.
 import { app, db, events, startBackground } from './state.js';
 import { vault } from './vault.js';
 import { bridge } from './bridge.js';
@@ -105,7 +105,7 @@ async function route() {
 function shellHtml() {
   return `<div class="shell">
     <aside class="sidebar">
-      <a class="logo" href="#/">${'<img src="assets/img/logo.svg" alt="">'}WorkForce</a>
+      <a class="logo" href="#/">${'<img src="assets/img/logo.svg" alt="">'}WorkForge</a>
       <button class="workspace" data-nav="/settings/business">
         <div class="ws-logo" id="ws-logo">W</div>
         <div class="grow"><div class="strong small ellipsis" id="ws-name">Your business</div><div class="tiny muted">Workspace</div></div>
@@ -208,7 +208,7 @@ async function boot() {
   try {
     await app.load();
   } catch (e) {
-    document.getElementById('root').innerHTML = `<div class="page"><div class="callout danger">${icon('alert-triangle')}<div>WorkForce could not open its local database (IndexedDB). Private browsing modes may block it.<div class="small mt-4">${esc(e.message)}</div></div></div></div>`;
+    document.getElementById('root').innerHTML = `<div class="page"><div class="callout danger">${icon('alert-triangle')}<div>WorkForge could not open its local database (IndexedDB). Private browsing modes may block it.<div class="small mt-4">${esc(e.message)}</div></div></div></div>`;
     return;
   }
   bindShell();

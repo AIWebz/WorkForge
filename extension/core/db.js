@@ -21,7 +21,7 @@ const STORES = {
 };
 
 export class DB extends Emitter {
-  constructor(name = 'workforce') {
+  constructor(name = 'workforge') {
     super();
     this.name = name;
     this.dbp = null;

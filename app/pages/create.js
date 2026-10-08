@@ -135,7 +135,7 @@ async function createForm({ el, app, navigate, query }) {
       extra && `Additional policies: ${extra}`,
       systems.length && `Systems available: ${systems.map((s) => SYSTEMS[s].name).join(', ')}.`,
       constraints.length && `Owner constraints: the employee ${constraints.join('; ')}.`,
-      browser && 'The employee should be able to work inside browser tabs through the WorkForce extension.',
+      browser && 'The employee should be able to work inside browser tabs through the WorkForge extension.',
     ].filter(Boolean).join('\n');
     const form = {
       name: el.querySelector('#f-name').value.trim(),

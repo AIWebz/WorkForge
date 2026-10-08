@@ -1,5 +1,5 @@
 // UI helpers: escaping, icons, toasts, modals, drawers, formatting.
-import { SYSTEMS, CONNECTIONS } from '../extension/core/catalog.js';
+import { SYSTEMS, systemIcon } from '../extension/core/catalog.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const icon = (name, cls = '') => `<i data-lucide="${name}"${cls ? ` class="${cls}"` : ''}></i>`;
@@ -148,9 +148,18 @@ export function avatar(emp, size = '') {
   return `<div class="avatar ${size}" style="background:${esc(c)}">${esc(emp?.avatar?.initials || '?')}</div>`;
 }
 
-export function sysIcon(id, small = false) {
-  const s = SYSTEMS[id] || CONNECTIONS[id] || { color: '#94a3b8', glyph: '?' };
-  return `<span class="sys-icon ${small ? 'sm' : ''}" style="background:${esc(s.color)}" title="${esc(s.name || id)}">${esc(s.glyph)}</span>`;
+/**
+ * Brand logo tile for a system id. Built-ins 'files', 'browser' and custom web
+ * apps (pass the name) get a neutral tile with an icon or monogram.
+ */
+export function sysIcon(id, small = false, name = '') {
+  const label = esc(SYSTEMS[id]?.name || name || id);
+  const cls = `sys-logo${small ? ' sm' : ''}`;
+  const src = systemIcon(id);
+  if (src) return `<span class="${cls}" title="${label}"><img src="${src}" alt="${label}" loading="lazy" decoding="async"></span>`;
+  if (id === 'files') return `<span class="${cls} neutral" title="Knowledge files">${icon('folder-open')}</span>`;
+  if (id === 'browser' || id === 'web') return `<span class="${cls} neutral" title="Browser">${icon('globe')}</span>`;
+  return `<span class="${cls} neutral mono" title="${label}">${esc((name || id).replace(/^custom_/, '').slice(0, 1).toUpperCase())}</span>`;
 }
 
 // Minimal, safe markdown (escape first, then format).

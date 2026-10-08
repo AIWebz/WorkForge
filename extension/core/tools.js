@@ -1,6 +1,6 @@
 // Tool executors. Every external call is a real HTTP request to the connected
 // system using credentials the user supplied; nothing is simulated. When a
-// provider blocks browser (CORS) requests, calls go through the WorkForce
+// provider blocks browser (CORS) requests, calls go through the WorkForge
 // extension relay, or fail with a clear explanation.
 import { TOOL_MAP, CONNECTIONS, SYSTEMS } from './catalog.js';
 import { retrieve, addMemory, searchFiles, readFile } from './memory.js';
@@ -299,7 +299,7 @@ export function createToolExecutor(env) {
   // Browser tools are executed by the extension in the working tab.
   for (const name of ['browser_read_page', 'browser_extract', 'browser_navigate', 'browser_click', 'browser_fill', 'browser_scroll']) {
     executors[name] = async (args, ctx) => {
-      if (!env.browser) throw new ToolError('Browser tools need the WorkForce extension. Install it from the Browser Extension page and connect it.', 'no_extension');
+      if (!env.browser) throw new ToolError('Browser tools need the WorkForge extension. Install it from the Browser Extension page and connect it.', 'no_extension');
       if (!ctx.task?.browser?.tabId) throw new ToolError('No browser tab is assigned to this task. Start the employee from the extension, or choose a tab when running the task.', 'no_tab');
       if (name === 'browser_navigate') assertAllowedDomain(ctx.employee, ctx.task, args.url);
       return env.browser.exec(name.replace('browser_', ''), args, ctx);

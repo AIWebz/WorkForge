@@ -1,11 +1,11 @@
-// Content script: relays messages between a WorkForce app page and the
+// Content script: relays messages between a WorkForge app page and the
 // extension's background worker. It only activates on pages that declare
-// <meta name="workforce-app">, and the background only serves origins the user
+// <meta name="workforge-app">, and the background only serves origins the user
 // explicitly paired.
 (() => {
-  if (window.__workforceBridge) return;
-  window.__workforceBridge = true;
-  const isApp = () => !!document.querySelector('meta[name="workforce-app"]');
+  if (window.__workforgeBridge) return;
+  window.__workforgeBridge = true;
+  const isApp = () => !!document.querySelector('meta[name="workforge-app"]');
 
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.__wf !== 'request' || !isApp()) return;

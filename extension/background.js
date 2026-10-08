@@ -1,10 +1,10 @@
-// WorkForce extension background worker: pairing, data sync with the web app,
+// WorkForge extension background worker: pairing, data sync with the web app,
 // API relay for services that block browser requests, and browser actions for
 // tasks started from the app. Only paired origins are served.
 import { DB } from './core/db.js';
 import { runBrowserAction } from './browser-tools.js';
 
-const db = new DB('workforce-ext');
+const db = new DB('workforge-ext');
 const VERSION = chrome.runtime.getManifest().version;
 
 chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -49,7 +49,7 @@ async function handleBridge({ type, payload = {} }, sender) {
     await chrome.windows.create({ url: chrome.runtime.getURL(`pair.html?mode=pair&origin=${encodeURIComponent(origin)}`), type: 'popup', width: 460, height: 560 });
     return { paired: false, pending: true };
   }
-  if (!isPaired) throw new BridgeError('This WorkForce app is not connected to the extension. Click “Connect extension” on the Browser Extension page.', 'not_paired');
+  if (!isPaired) throw new BridgeError('This WorkForge app is not connected to the extension. Click “Connect extension” on the Browser Extension page.', 'not_paired');
 
   switch (type) {
     case 'unpair':
@@ -79,7 +79,7 @@ async function relayFetch({ url, method = 'GET', headers = {}, body }) {
   try { u = new URL(url); } catch { throw new BridgeError('Invalid URL'); }
   if (!/^https?:$/.test(u.protocol)) throw new BridgeError('Only http(s) requests can be relayed');
   if (!(await chrome.permissions.contains({ origins: [`${u.origin}/*`] }))) {
-    throw new BridgeError(`The extension has no permission for ${u.host}. Open the WorkForce side panel → Settings → “Allow web access” or grant this site.`, 'no_host_permission');
+    throw new BridgeError(`The extension has no permission for ${u.host}. Open the WorkForge side panel → Settings → “Allow web access” or grant this site.`, 'no_host_permission');
   }
   const res = await fetch(url, { method, headers, body: method === 'GET' || method === 'HEAD' ? undefined : body, credentials: 'omit' });
   const text = await res.text();
