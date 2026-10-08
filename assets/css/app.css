@@ -639,3 +639,34 @@ label.field, .field { display: flex; flex-direction: column; gap: 6px; }
 .sys-logo.neutral { background: var(--surface-3); color: var(--text-2); }
 .sys-logo.mono { font: 600 12px var(--font); color: var(--text-2); }
 .sys-logo .lucide { width: 58%; height: 58%; }
+
+/* ---------- Create: examples */
+.examples { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.examples .tiny { margin-right: 4px; }
+.chip.example { cursor: pointer; font: inherit; font-size: 12px; background: var(--surface); }
+.chip.example:hover { border-color: var(--border-strong); color: var(--text); }
+.chip.example .sys-logo.sm { width: 16px; height: 16px; border: 0; }
+.feed-msg { overflow-wrap: anywhere; }
+
+/* ---------- AI engine status */
+.engine-orb { width: 12px; height: 12px; border-radius: 50%; background: var(--faint); flex: none; box-shadow: 0 0 0 4px var(--surface-3); }
+.engine-orb.ready { background: var(--success); }
+.engine-orb.loading { background: var(--ember); animation: pulse 1.2s infinite; }
+.engine-orb.error, .engine-orb.off { background: var(--danger); }
+.engine-orb.idle { background: var(--primary); }
+
+/* ---------- Systems: compact catalog */
+.sys-group { margin-bottom: 20px; }
+.sys-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.sys-tile { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); cursor: pointer; text-align: left; font: inherit; color: var(--text); transition: border-color .15s, background .15s; }
+.sys-tile:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.sys-tile .grow { display: flex; flex-direction: column; min-width: 0; }
+.sys-tile .grow > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sys-tile > svg.lucide { color: var(--faint); }
+.sys-tile.on { border-color: var(--success-50); background: var(--success-50); }
+.sys-tile.on > svg.lucide { color: var(--success); }
+.tab-count { font: 500 11px var(--mono); color: var(--muted); margin-left: 4px; }
+
+/* ---------- Profile: stacked tab sections */
+.tab-section + .tab-section { margin-top: 32px; }
+.tab-section-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }

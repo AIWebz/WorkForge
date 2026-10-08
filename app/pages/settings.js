@@ -1,6 +1,6 @@
 import { esc, icon, toast, modal, confirmDialog, download, refreshIcons } from '../ui.js';
 import { testEngine } from '../../extension/core/ai.js';
-import { MODELS, modelInfo } from '../../extension/core/engine.js';
+import { modelInfo } from '../../extension/core/engine.js';
 import { STORE_NAMES } from '../../extension/core/db.js';
 import { app, syncExtension } from '../state.js';
 import { systemPickerHtml, bindSystemPicker } from './systems.js';
@@ -48,86 +48,56 @@ async function businessSection(host) {
 }
 
 // ------------------------------------------------------------ AI engine
-// ------------------------------------------------------------ AI engine
-/** Model picker + download/test controls. Used by Settings and onboarding. */
-export async function engineFormHtml() {
-  const cfg = await app.getAI();
+/** Live status of the on-device engine. Nothing to configure — the model is chosen automatically. */
+export async function engineStatusHtml() {
   const gpu = await app.engine.gpuInfo();
-  const hosted = await app.hostedModels();
-  const src = cfg.sourceName;
-  return `<div class="form-grid">
-    ${gpu.supported ? '' : `<div class="callout danger">${icon('alert-triangle')}<div><strong>This browser can't run the AI engine.</strong><div class="small mt-4">${esc(gpu.reason)}</div></div></div>`}
-    <div class="field"><span>Model</span>
-      <div class="col gap-6">${MODELS.map((m) => `<label class="check model-opt" style="align-items:flex-start"><input type="radio" name="ai-model" value="${m.id}" ${m.id === cfg.model ? 'checked' : ''}><div><div class="strong">${esc(m.label)} <span class="tiny muted mono">${esc(m.id.replace(/-q4f16_1-MLC$/, ''))}</span></div><div class="help">${esc(m.note)} · needs about ${(m.vramMB / 1024).toFixed(1)} GB of GPU memory${hosted.includes(m.id) ? ' · <strong>hosted on this site</strong>' : ''}</div></div></label>`).join('')}</div>
-    </div>
-    <div class="field"><span>Download the model from</span>
-      <div class="seg" id="ai-source">
-        <button type="button" data-src="site" class="${src === 'site' ? 'active' : ''}" ${hosted.length ? '' : 'disabled title="Enable model hosting in the GitHub Pages workflow first"'}>This site</button>
-        <button type="button" data-src="mirror" class="${src !== 'site' ? 'active' : ''}">Public model mirror</button>
-      </div>
-      <span class="help">${hosted.length ? `This site hosts: ${hosted.map(esc).join(', ')}.` : 'This site does not host model weights yet — see “Self-host the model” in the README. Until then weights download once from the public open-model mirror (Hugging Face).'} Weights are cached by your browser; nothing you type is sent anywhere.</span>
-    </div>
-    <div class="engine-progress" id="ai-progress" hidden><div class="meter"><span id="ai-bar" style="width:0%"></span></div><div class="tiny muted mt-4" id="ai-progress-text"></div></div>
-    <div class="row wrap"><button class="btn btn-primary" id="ai-save">${icon('save')} Save</button><button class="btn" id="ai-load" ${gpu.supported ? '' : 'disabled'}>${icon('download')} Load &amp; test</button><button class="btn btn-ghost" id="ai-delete">${icon('trash-2')} Remove downloaded model</button><span class="small muted" id="ai-status"></span></div>
+  const st = app.engine.status;
+  const cfg = await app.getAI();
+  let next = '';
+  try { next = gpu.supported ? (await app.engine.candidates(cfg))[0] : ''; } catch { next = ''; }
+  const model = st.model || next;
+  const label = !gpu.supported ? 'Not available in this browser' : st.state === 'ready' ? 'Running on this device' : st.state === 'loading' ? 'Preparing…' : st.state === 'error' ? 'Could not start' : 'Ready to start';
+  return `<div class="engine-status">
+    <div class="between"><div class="row"><span class="engine-orb ${gpu.supported ? st.state : 'off'}"></span><div><div class="strong">${esc(label)}</div><div class="small muted">${gpu.supported ? `${esc(modelInfo(model).label)} · chosen automatically for your GPU` : esc(gpu.reason)}</div></div></div>
+      ${gpu.supported ? `<span class="tiny muted mono">${cfg.source?.base ? 'served by this site' : 'open-model mirror'}</span>` : ''}</div>
+    <div class="engine-progress mt-12" id="ai-progress" ${st.state === 'loading' ? '' : 'hidden'}><div class="meter"><span id="ai-bar" style="width:${Math.round((st.progress || 0) * 100)}%"></span></div><div class="tiny muted mt-4" id="ai-progress-text">${esc(st.text)}</div></div>
+    ${st.state === 'error' ? `<div class="callout danger mt-12">${icon('alert-triangle')}<div class="small">${esc(st.text)}</div></div>` : ''}
+    ${gpu.supported ? `<div class="row wrap mt-16"><button class="btn btn-primary" id="ai-prepare" ${st.state === 'ready' || st.state === 'loading' ? 'disabled' : ''}>${icon('download')} ${st.state === 'ready' ? 'Engine is running' : 'Prepare now'}</button><button class="btn btn-ghost" id="ai-delete">${icon('trash-2')} Free up space</button><span class="small muted" id="ai-status"></span></div>` : ''}
   </div>`;
 }
 
-export function bindEngineForm(root, onSaved) {
+export function bindEngineStatus(root, rerender) {
   const q = (sel) => root.querySelector(sel);
-  let source = q('#ai-source .active')?.dataset.src || 'mirror';
-  root.querySelectorAll('#ai-source [data-src]').forEach((b) => b.addEventListener('click', () => {
-    if (b.disabled) return;
-    source = b.dataset.src;
-    root.querySelectorAll('#ai-source [data-src]').forEach((x) => x.classList.toggle('active', x === b));
-  }));
-  const status = (t, cls = 'muted') => { q('#ai-status').className = `small ${cls}`; q('#ai-status').textContent = t; };
-  const model = () => q('[name=ai-model]:checked')?.value;
-  const save = async () => { await app.saveAI({ model: model(), source }); return app.getAI(); };
   const off = app.engine.onStatus((st) => {
+    if (!root.isConnected) return off();
     const bar = q('#ai-bar');
-    if (!bar) return off();
-    q('#ai-progress').hidden = st.state !== 'loading';
+    if (st.state !== 'loading' || !bar) { rerender && rerender(); return; }
+    q('#ai-progress').hidden = false;
     bar.style.width = `${Math.round((st.progress || 0) * 100)}%`;
     q('#ai-progress-text').textContent = st.text || '';
   });
-  q('#ai-save').onclick = async () => {
-    await save();
-    status('Saved', 's-ok');
-    toast(`AI engine: ${modelInfo(model()).label}`, 'success');
-    onSaved && onSaved();
-  };
-  q('#ai-load').onclick = async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    status('Loading the model — the first time downloads it to this browser…');
-    try {
-      const cfg = await save();
-      const r = await testEngine(cfg);
-      status(r.ok ? `Running on this device · ${modelInfo(cfg.model).label}` : `Model answered: “${r.text}”`, r.ok ? 's-ok' : 's-wait');
-      onSaved && onSaved();
-    } catch (err) { status(err.message, 's-err'); } finally { btn.disabled = false; }
-  };
-  q('#ai-delete').onclick = async () => {
-    if (!(await confirmDialog('Remove the downloaded model from this browser? It downloads again the next time an employee runs.', { confirm: 'Remove', danger: true }))) return;
-    try { await app.engine.deleteCache(await app.getAI()); status('Removed from this browser'); } catch (err) { status(err.message, 's-err'); }
-  };
+  q('#ai-prepare')?.addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    try { await app.prepareEngine(); toast('AI engine is running on this device', 'success'); } catch (err) { toast(err.message, 'error'); }
+  });
+  q('#ai-delete')?.addEventListener('click', async () => {
+    if (!(await confirmDialog('Remove the downloaded model from this browser? It downloads again automatically the next time an employee runs.', { confirm: 'Remove', danger: true }))) return;
+    try { await app.engine.deleteCache(await app.getAI()); toast('Model removed from this browser'); rerender && rerender(); } catch (err) { toast(err.message, 'error'); }
+  });
 }
 
 async function aiSection(host) {
-  host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.3fr 1fr;align-items:start">
-    <div class="card card-pad">${await engineFormHtml()}</div>
+  host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.2fr 1fr;align-items:start">
+    <div class="card card-pad" id="engine-box">${await engineStatusHtml()}</div>
     <div class="card card-pad col">
-      <h3>${icon('cpu')} How the AI engine runs</h3>
-      <p class="small muted">The AI engine is an open-source language model that runs <strong>on this computer's GPU</strong>, inside your browser (WebGPU). There is no AI provider, no account and no API key.</p>
-      <ul class="small muted" style="padding-left:18px;margin:0">
-        <li>The model is downloaded once and cached by the browser. Self-host it on your GitHub Pages site to serve it from your own repository.</li>
-        <li>Generation (analysis and architecture) and every script step run through this engine. Answers are constrained to valid JSON tool calls, so small models stay reliable.</li>
-        <li>Prompts, files and results never leave this device.</li>
-        <li>Bigger models give better results but need more GPU memory. On GPUs without 16-bit shader support WorkForge automatically uses the 32-bit build.</li>
-      </ul>
+      <h3>${icon('cpu')} How it works</h3>
+      <p class="small muted">WorkForge's AI engine is an open-source language model that runs on this computer's GPU, inside your browser. There's nothing to set up: it picks the best model your GPU can hold, downloads it once, and keeps it in the browser cache.</p>
+      <p class="small muted">No AI provider, no account, no API key — prompts, files and results never leave this device.</p>
     </div>
   </div>`;
-  bindEngineForm(host);
+  const box = host.querySelector('#engine-box');
+  const rerender = async () => { if (!box.isConnected) return; box.innerHTML = await engineStatusHtml(); bindEngineStatus(box, rerender); refreshIcons(); };
+  bindEngineStatus(box, rerender);
   refreshIcons();
 }
 

@@ -206,6 +206,7 @@ export default async function systemsPage(ctx) {
   const page = el.querySelector('#sp');
   let filter = '';
   let first = true;
+  let tab = null; // 'connected' | 'add'
 
   const render = async () => {
     if (!ctx.isCurrent()) return;
@@ -246,25 +247,18 @@ export default async function systemsPage(ctx) {
     const catalogCard = (id, s) => {
       const conn = rows.some((r) => r.id === id);
       const hay = `${s.name} ${s.group} ${s.description}`.toLowerCase();
-      return `<div class="int-card" data-card="${esc(id)}" data-hay="${esc(hay)}" ${q && !hay.includes(q) ? 'hidden' : ''}>
-        <div class="between"><div class="row">${sysIcon(id, false, s.name)}<div><div class="strong">${esc(s.name)}</div>${s.address ? '<div class="tiny muted">Uses your own address</div>' : `<div class="tiny muted">${esc(hostOf(s.url))}</div>`}</div></div>${conn ? statusBadge('connected', 'Connected') : ''}</div>
-        <p class="small muted">${esc(s.description)}</p>
-        <div class="row" style="justify-content:flex-end"><button class="btn btn-sm ${conn ? '' : 'btn-primary'}" data-connect="${esc(id)}">${conn ? 'Manage' : `${icon('plus')} Connect`}</button></div>
-      </div>`;
+      return `<button type="button" class="sys-tile ${conn ? 'on' : ''}" data-card="${esc(id)}" data-hay="${esc(hay)}" data-connect="${esc(id)}" title="${esc(s.description)}" ${q && !hay.includes(q) ? 'hidden' : ''}>
+        ${sysIcon(id, false, s.name)}<span class="grow"><span class="strong small">${esc(s.name)}</span><span class="tiny muted">${conn ? 'Connected' : s.address ? 'Your own address' : esc(hostOf(s.url))}</span></span>${conn ? icon('check') : icon('plus')}
+      </button>`;
     };
+    if (!tab) tab = wantsCatalog || !connected.length ? 'add' : 'connected';
 
-    page.innerHTML = `<div class="page-head"><div><h1>Systems</h1><p>The web apps your employees work in. They work in browser tabs with your own signed-in session through the WorkForge extension — no passwords, tokens or keys are stored.</p></div>
-      <div class="row"><button class="btn" id="add-custom">${icon('globe')} Add custom web app</button><a class="btn btn-primary" href="#/systems" id="to-catalog">${icon('plus')} Connect a system</a></div></div>
-      <div class="stats mb-16">
-        <div class="stat"><div class="stat-top">Connected systems</div><div class="stat-value">${connected.length}</div></div>
-        <div class="stat"><div class="stat-top">Site access granted</div><div class="stat-value">${bridge.paired && granted ? `${grantedCount}/${connected.length}` : '—'}</div></div>
-        <div class="stat"><div class="stat-top">Browser extension</div><div class="stat-value" style="font-size:16px">${extLabel}</div><div class="stat-sub small muted">${bridge.paired ? `v${esc(bridge.version || '')}` : '<a href="#/extension">Set it up</a>'}</div></div>
-        <div class="stat"><div class="stat-top">AI engine</div><div class="stat-value" style="font-size:16px">${aiReady ? 'Ready' : 'Not configured'}</div></div>
-      </div>
+    page.innerHTML = `<div class="page-head"><div><h1>Systems</h1><p>The web apps your employees work in — through the WorkForge extension, signed in as you. Nothing secret is stored.</p></div>
+      <button class="btn" id="add-custom">${icon('globe')} Add custom web app</button></div>
       ${!bridge.paired && connected.length ? `<div class="callout warn mb-16">${icon('puzzle')}<div class="small">Employees work in these systems through the WorkForge browser extension. ${bridge.available ? 'It is installed — <a href="#/extension">connect it to this workspace</a>.' : '<a href="#/extension">Install the extension</a> to let them start.'}</div></div>` : ''}
+      <div class="tabs"><button data-tab="connected" class="${tab === 'connected' ? 'active' : ''}">Connected <span class="tab-count">${connected.length}</span></button><button data-tab="add" class="${tab === 'add' ? 'active' : ''}">Add systems</button></div>
 
-      <div class="section-title between mb-8"><h3>Connected</h3><span class="small muted">${connected.length ? 'Sign in to each system in this browser so employees can use your session.' : ''}</span></div>
-      ${connected.length ? `<div class="card mb-16"><div class="table-wrap"><table class="log-table"><thead><tr><th>System</th><th>Address</th><th>Used by</th><th>Site access</th><th></th></tr></thead><tbody>
+      ${tab === 'connected' ? (connected.length ? `<div class="card"><div class="table-wrap"><table class="log-table"><thead><tr><th>System</th><th>Address</th><th>Used by</th><th>Site access</th><th></th></tr></thead><tbody>
         ${connected.map((r) => {
     const s = all[r.id];
     const users = usedBy(r.id);
@@ -273,21 +267,17 @@ export default async function systemsPage(ctx) {
           <td>${address(r)}</td>
           <td class="small">${users.length ? users.map((e) => `<a href="#/employees/${esc(e.id)}">${esc(e.name)}</a>`).join(', ') : '<span class="muted">—</span>'}</td>
           <td>${accessCell(r.id)}</td>
-          <td><div class="row gap-6" style="justify-content:flex-end">${url ? `<a class="btn btn-xs" href="${esc(url)}" target="_blank" rel="noopener">${icon('external-link')} Open</a>` : ''}<button class="btn btn-xs" data-connect="${esc(r.id)}">${icon('pencil')} Edit</button><button class="btn btn-xs btn-ghost" data-remove="${esc(r.id)}" title="Remove">${icon('trash-2')} Remove</button></div></td></tr>`;
+          <td><div class="row gap-6" style="justify-content:flex-end">${url ? `<a class="btn btn-xs" href="${esc(url)}" target="_blank" rel="noopener" title="Open">${icon('external-link')}</a>` : ''}<button class="btn btn-xs" data-connect="${esc(r.id)}" title="Edit">${icon('pencil')}</button><button class="btn btn-xs btn-ghost" data-remove="${esc(r.id)}" title="Remove">${icon('trash-2')}</button></div></td></tr>`;
   }).join('')}
-      </tbody></table></div></div>` : `<div class="card mb-16">${emptyState('app-window', 'No systems connected yet', 'Pick the web apps your business runs on from the catalog below. Employees will work in them in browser tabs, signed in as you.')}</div>`}
-
-      <div class="between mt-24 mb-8" id="catalog"><h3>Catalog</h3><div class="input-icon" style="max-width:260px">${icon('search')}<input class="input" id="cat-search" placeholder="Search systems" value="${esc(filter)}"></div></div>
+      </tbody></table></div></div><p class="help mt-12">Sign in to each system in this browser so employees can use your session.</p>` : `<div class="card">${emptyState('app-window', 'No systems connected yet', 'Add the web apps your business runs on. Employees work in them in browser tabs, signed in as you.', '<button class="btn btn-primary" data-tab="add">Add systems</button>')}</div>`)
+    : `<div class="between mb-16"><div class="input-icon" style="width:min(320px,100%)">${icon('search')}<input class="input" id="cat-search" placeholder="Search 28 systems" value="${esc(filter)}"></div><span class="small muted">${grantedCount ? `${grantedCount} with site access` : ''}</span></div>
       ${groups.map((g) => {
     const list = Object.entries(SYSTEMS).filter(([, s]) => s.group === g);
     if (!list.length) return '';
-    return `<div data-group><h4 class="small muted mb-8 mt-16" style="text-transform:uppercase;letter-spacing:.06em">${esc(g)}</h4><div class="grid-3">${list.map(([id, s]) => catalogCard(id, s)).join('')}</div></div>`;
+    return `<div data-group class="sys-group"><div class="section-title mb-8">${esc(g)}</div><div class="sys-tiles">${list.map(([id, s]) => catalogCard(id, s)).join('')}</div></div>`;
   }).join('')}
-      <div data-group><h4 class="small muted mb-8 mt-16" style="text-transform:uppercase;letter-spacing:.06em">Your own</h4><div class="grid-3">
-        ${rows.filter((r) => r.custom && all[r.id]).map((r) => catalogCard(r.id, all[r.id])).join('')}
-        <div class="int-card" data-card="custom" data-hay="custom web app other website portal admin"><div class="row">${sysIcon('web')}<div class="strong">Custom web app</div></div><p class="small muted">Any other web app you sign in to — an admin panel, a supplier portal, an internal tool.</p><div class="row" style="justify-content:flex-end"><button class="btn btn-sm" data-add-custom>${icon('plus')} Add</button></div></div>
-        <div class="int-card" data-card="files" data-hay="knowledge files documents pdf"><div class="row">${sysIcon('files')}<div class="strong">Knowledge files</div></div><p class="small muted">Documents employees can search and read, stored only in this browser.</p><div class="row" style="justify-content:flex-end"><a class="btn btn-sm" href="#/files">Manage files</a></div></div>
-      </div></div>`;
+      ${rows.some((r) => r.custom && all[r.id]) ? `<div data-group class="sys-group"><div class="section-title mb-8">Your own</div><div class="sys-tiles">${rows.filter((r) => r.custom && all[r.id]).map((r) => catalogCard(r.id, all[r.id])).join('')}</div></div>` : ''}`}`;
+    void extLabel;
 
     page.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
     page.querySelectorAll('[data-remove]').forEach((b) => b.onclick = () => removeSystem(app, b.dataset.remove));
@@ -301,17 +291,16 @@ export default async function systemsPage(ctx) {
     });
     page.querySelector('#add-custom').onclick = () => openCustomDialog(app);
     page.querySelectorAll('[data-add-custom]').forEach((b) => b.onclick = () => openCustomDialog(app));
-    page.querySelector('#to-catalog').onclick = (e) => { e.preventDefault(); page.querySelector('#catalog').scrollIntoView({ behavior: 'smooth' }); page.querySelector('#cat-search').focus({ preventScroll: true }); };
+    page.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { tab = b.dataset.tab; render(); });
     const search = page.querySelector('#cat-search');
-    search.addEventListener('input', () => {
+    search?.addEventListener('input', () => {
       filter = search.value.trim();
       const term = filter.toLowerCase();
       page.querySelectorAll('[data-card]').forEach((c) => { c.hidden = !!term && !c.dataset.hay.includes(term); });
       page.querySelectorAll('[data-group]').forEach((g) => { g.hidden = ![...g.querySelectorAll('[data-card]')].some((c) => !c.hidden); });
     });
-    if (filter) search.dispatchEvent(new Event('input'));
+    if (filter && search) search.dispatchEvent(new Event('input'));
     refreshIcons();
-    if (first && wantsCatalog) page.querySelector('#catalog').scrollIntoView();
     first = false;
   };
 

@@ -15,7 +15,15 @@ const PERMS = [
   { key: 'files', label: 'Read knowledge files', level: 'allow', text: 'read knowledge files' },
 ];
 const SENSITIVE = new Set(['click', 'form_input']);
-const VISIBLE_TILES = 12;
+const VISIBLE_TILES = 6;
+
+// Starting points for common jobs (the user can edit before generating).
+const EXAMPLES = [
+  ['Inbox triage', 'gmail', 'Every morning, go through new emails in Gmail, label and archive newsletters, draft replies to customer questions using our help docs, and ask me before sending anything.'],
+  ['Lead follow-up', 'hubspot', 'When a new lead appears in HubSpot, research the company on LinkedIn, score the lead, add notes to the contact, and draft a personal follow-up email in Gmail for me to approve.'],
+  ['Support desk', 'zendesk', 'Work through new Zendesk tickets: answer common questions using our knowledge files, tag and prioritise the rest, and escalate refunds or angry customers to me.'],
+  ['Order check', 'shopify', 'Every afternoon, review new Shopify orders, flag anything unusual (high value, mismatched addresses), and post a short summary to our Slack channel.'],
+];
 
 // ------------------------------------------------------------ generation jobs
 export function startGeneration(app, { request, form = {} }) {
@@ -77,7 +85,7 @@ async function createForm({ el, app, navigate, query }) {
     <a class="back" href="#/employees">${icon('arrow-left')} Back to employees</a>
     <div class="page-head">
       <div><h1>Create an AI employee</h1><p>Describe the job. The AI engine designs the scripts, decisions, memory and permissions; the employee then works in your systems through the browser, signed in as you.</p></div>
-      <div class="row small" style="border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:var(--surface)">${icon('settings-2')} Expert mode <label class="toggle"><input type="checkbox" id="expert" aria-label="Expert mode"><span></span></label></div>
+      <div class="row small" style="border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:var(--surface)">${icon('sliders-horizontal')} Advanced <label class="toggle"><input type="checkbox" id="expert" aria-label="Expert mode"><span></span></label></div>
     </div>
     ${aiReady ? '' : `<div class="callout warn mb-16">${icon('alert-triangle')}<div>This browser can't run the AI engine (it needs WebGPU). Open WorkForge in a recent Chrome, Edge or Brave on a computer with a GPU — <a href="#/settings/ai">details</a>.</div></div>`}
     <div class="grid-2" style="grid-template-columns: 1.15fr 1fr; align-items:start">
@@ -90,13 +98,12 @@ async function createForm({ el, app, navigate, query }) {
           <textarea class="textarea" id="f-request" rows="7" maxlength="4000" placeholder="Every morning, go through new support emails in Gmail, look up the customer in HubSpot, draft a reply using our help docs and ask me before sending. Escalate refunds over $200.">${esc(prefill)}</textarea>
           <div class="between"><span class="help">Describe the work, where it happens, the decisions it makes and what needs your approval.</span><span class="help" id="f-count">0/4000</span></div>
         </label>
-        <div>
-          <div class="row mb-8">${icon('lock')}<span class="label">What it may do</span></div>
-          <p class="help mb-8">Applies to the systems you select. Clicking and typing always wait for your approval unless you change that in Expert mode.</p>
-          <div class="grid-2" style="gap:8px">${PERMS.map((p) => `<label class="check"><input type="checkbox" data-perm="${p.key}" checked>${p.label}${SENSITIVE.has(p.key) ? ' <span class="badge badge-warning" style="margin-left:4px">approval</span>' : ''}</label>`).join('')}</div>
-        </div>
+        <div class="examples"><span class="tiny muted">Start from an example</span>${EXAMPLES.map(([t, sys], i) => `<button type="button" class="chip example" data-example="${i}">${sysIcon(sys, true)}${esc(t)}</button>`).join('')}</div>
+        <p class="help row gap-6">${icon('shield-check')} It reads and moves around your systems freely, and asks you before it clicks or types anything. Change this in Advanced.</p>
         <div id="expert-box" hidden class="form-grid">
           <div class="divider"></div>
+          <div><div class="label mb-8">What it may do</div>
+          <div class="grid-2" style="gap:8px">${PERMS.map((p) => `<label class="check"><input type="checkbox" data-perm="${p.key}" checked>${p.label}${SENSITIVE.has(p.key) ? ' <span class="badge badge-warning" style="margin-left:4px">approval</span>' : ''}</label>`).join('')}</div></div>
           <label class="field"><span>Additional instructions / policies</span><textarea class="textarea" id="f-extra" rows="3" placeholder="Tone of voice, qualification criteria, escalation contacts, working hours…"></textarea></label>
           <label class="field"><span>Grant knowledge collections</span>
             ${collections.length ? `<div class="col gap-6">${collections.map((c) => `<label class="check"><input type="checkbox" data-coll="${esc(c.id)}">${esc(c.name)}</label>`).join('')}</div>` : '<span class="help">No collections yet — <a href="#/files">upload files</a> first.</span>'}
@@ -108,17 +115,25 @@ async function createForm({ el, app, navigate, query }) {
       <div class="col gap-16">
         <div class="card card-pad">
           <div class="between"><h3>Systems it works in</h3><a class="small" href="#/systems">Manage systems</a></div>
-          <p class="help mt-4 mb-16">The employee opens these web apps in a browser tab with your login. Systems you have not connected can be connected later.</p>
+          <p class="help mt-4 mb-16">Pick the web apps this job happens in. The employee opens them in a tab with your login.</p>
           <div class="tiles" id="tiles">${order.map(tileHtml).join('')}</div>
           ${order.length > VISIBLE_TILES ? `<button type="button" class="link-btn mt-12" id="more">${icon('chevron-down')} Show all ${order.length} systems</button>` : ''}
         </div>
-        <div class="callout">${icon('puzzle')}<div class="small">Employees work through the WorkForge browser extension, in tabs that use your signed-in session. <a href="#/extension">Set up the extension</a> if you have not yet.</div></div>
+        ${app.bridge.paired ? '' : `<p class="help row gap-6">${icon('puzzle')} Employees work through the <a href="#/extension">WorkForge browser extension</a>.</p>`}
         <button class="btn btn-primary btn-lg btn-block" id="generate" ${aiReady ? '' : 'disabled'}>${icon('sparkles')} Generate employee ${icon('arrow-right')}</button>
       </div>
     </div>
   </div>`;
 
   const req = el.querySelector('#f-request');
+  el.querySelectorAll('[data-example]').forEach((b) => b.onclick = () => {
+    const [, sys, text] = EXAMPLES[Number(b.dataset.example)];
+    req.value = text;
+    req.dispatchEvent(new Event('input'));
+    const tile = el.querySelector(`[data-sys="${sys}"]`);
+    if (tile && !tile.classList.contains('selected')) tile.click();
+    req.focus();
+  });
   const count = () => { el.querySelector('#f-count').textContent = `${req.value.length}/4000`; };
   req.addEventListener('input', count);
   count();
@@ -135,6 +150,7 @@ async function createForm({ el, app, navigate, query }) {
     if (selected.has(id)) selected.delete(id); else selected.add(id);
     b.classList.toggle('selected', selected.has(id));
     b.setAttribute('aria-pressed', String(selected.has(id)));
+    if (selected.has(id)) b.hidden = false;
   });
 
   el.querySelector('#generate').addEventListener('click', () => {

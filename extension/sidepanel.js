@@ -7,7 +7,7 @@ import { DB } from './core/db.js';
 import { Runtime, TERMINAL } from './core/runtime.js';
 import { createToolExecutor } from './core/tools.js';
 import { isConfigured, setEngineHost, testEngine } from './core/ai.js';
-import { createEngineHost, MODELS, DEFAULT_MODEL, modelInfo } from './core/engine.js';
+import { createEngineHost, modelInfo } from './core/engine.js';
 import { SYSTEMS, SCOPE_LABELS, SYSTEM_SCOPES, allSystems, systemUrl, systemOrigins, systemForUrl, hostOf } from './core/catalog.js';
 import { uid, now } from './core/util.js';
 import { runBrowserAction, openWorkingTab } from './browser-tools.js';
@@ -25,10 +25,10 @@ const engine = createEngineHost({ webllmUrl: chrome.runtime.getURL('vendor/web-l
 setEngineHost(engine);
 engine.onStatus(() => renderStatus());
 
-// Model choice is synced from the app (or picked here); stored in local storage — it is not a secret.
+// The model is chosen automatically for this GPU. If the app's site hosts the weights, load them from there.
 async function getAI() {
   const { ai } = await chrome.storage.local.get('ai');
-  return { model: ai?.model || DEFAULT_MODEL, source: ai?.source?.base ? { base: ai.source.base } : {} };
+  return { auto: true, hosted: ai?.hosted || [], source: ai?.source?.base ? { base: ai.source.base } : {} };
 }
 const getConnections = () => db.all('connections');
 
@@ -83,7 +83,7 @@ async function renderStatus() {
   const gpu = await engine.gpuInfo();
   const st = engine.status;
   const ready = gpu.supported && isConfigured(ai);
-  const label = !gpu.supported ? 'AI engine needs WebGPU' : st.state === 'loading' ? `Loading model ${Math.round((st.progress || 0) * 100)}%` : st.state === 'ready' ? `AI engine running · ${esc(modelInfo(ai.model).label)}` : st.state === 'error' ? `AI engine error: ${esc(st.text)}` : `AI engine on device · ${esc(modelInfo(ai.model).label)}`;
+  const label = !gpu.supported ? 'AI engine needs WebGPU' : st.state === 'loading' ? `Loading model ${Math.round((st.progress || 0) * 100)}%` : st.state === 'ready' ? `AI engine running · ${esc(modelInfo(st.model).label)}` : st.state === 'error' ? `AI engine error: ${esc(st.text)}` : 'AI engine on this device · starts automatically';
   statusEl.innerHTML = `<span><span class="dot" style="background:${ready && st.state !== 'error' ? 'var(--ok)' : 'var(--warn)'}"></span>${label}</span>
     <span>${lastSyncAt ? `Synced ${new Date(lastSyncAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Not synced'}${appOrigin ? ` · <a href="#" id="open-app">open app</a>` : ''}</span>`;
   statusEl.querySelector('#open-app')?.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: `${appUrl || `${appOrigin}/`}#/dashboard` }); });
@@ -315,9 +315,8 @@ async function renderSettings() {
       <div class="between" style="margin-top:8px"><span class="small">Allow any https site</span><button class="btn sm" id="web-all">${webAll ? 'Disable' : 'Allow'}</button></div>
     </div>
     <div class="card"><h2>AI engine</h2>
-      <p class="small muted">${gpu.supported ? `An open-source model runs on this computer's GPU — no API, no key. It downloads once${ai.source.base ? ' from your WorkForge site' : ''} and is cached by this browser.` : esc(gpu.reason)}</p>
-      <label class="field">Model<select id="ai-model">${MODELS.map((m) => `<option value="${esc(m.id)}" ${m.id === ai.model ? 'selected' : ''}>${esc(m.label)} — ${esc(m.note)}</option>`).join('')}</select></label>
-      <div class="row" style="margin-top:8px"><button class="btn sm primary" id="ai-save">Save</button><button class="btn sm" id="ai-load" ${gpu.supported ? '' : 'disabled'}>Load &amp; test</button><span class="tiny muted" id="ai-msg"></span></div>
+      <p class="small muted">${gpu.supported ? `An open-source model runs on this computer's GPU — no API, no key, nothing to set up. It is chosen automatically, downloads once${ai.source.base ? ' from your WorkForge site' : ''} and is cached by this browser.` : esc(gpu.reason)}</p>
+      <div class="row" style="margin-top:8px"><button class="btn sm primary" id="ai-load" ${gpu.supported ? '' : 'disabled'}>Prepare now</button><span class="tiny muted" id="ai-msg">${esc(engine.status.state === 'ready' ? `Running: ${modelInfo(engine.status.model).label}` : '')}</span></div>
     </div>`;
   view.querySelectorAll('[data-unpair]').forEach((b) => b.onclick = async () => {
     await chrome.storage.local.set({ pairedOrigins: pairedOrigins.filter((o) => o !== b.dataset.unpair) });
@@ -337,22 +336,14 @@ async function renderSettings() {
     alert(r?.ok ? `Added. Reload ${origin} and click “Connect extension”.` : `Failed: ${r?.error}`);
     renderSettings();
   };
-  view.querySelector('#ai-save').onclick = async () => {
-    const { ai: cur } = await chrome.storage.local.get('ai');
-    await chrome.storage.local.set({ ai: { ...(cur || {}), model: view.querySelector('#ai-model').value } });
-    renderStatus();
-    renderSettings();
-  };
   view.querySelector('#ai-load').onclick = async (e) => {
     const btn = e.currentTarget;
     const msg = view.querySelector('#ai-msg');
     btn.disabled = true;
     msg.textContent = 'Loading — the first time downloads the model…';
     try {
-      const { ai: cur } = await chrome.storage.local.get('ai');
-      await chrome.storage.local.set({ ai: { ...(cur || {}), model: view.querySelector('#ai-model').value } });
       const r = await testEngine(await getAI());
-      msg.textContent = r.ok ? 'Running on this device' : `Model answered: ${r.text}`;
+      msg.textContent = r.ok ? `Running: ${modelInfo(engine.status.model).label}` : `Model answered: ${r.text}`;
     } catch (err) { msg.textContent = err.message; } finally { btn.disabled = false; }
   };
 }

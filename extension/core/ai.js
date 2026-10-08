@@ -17,8 +17,9 @@ export class AIError extends Error {
   constructor(message, { code } = {}) { super(message); this.code = code; }
 }
 
+// The model is chosen automatically by the engine host; any config object works.
 export function isConfigured(cfg) {
-  return !!(cfg && cfg.model);
+  return !!cfg;
 }
 
 // Approximate character budget for a conversation (context window is 16k tokens).
@@ -75,7 +76,6 @@ function toolCallSchema(tools) {
  */
 export async function chat(cfg, { system, messages, tools = [], maxTokens = 2048, json = false, schema = null, signal } = {}) {
   if (!host) throw new AIError('The AI engine is not available here.', { code: 'no_engine' });
-  if (!isConfigured(cfg)) throw new AIError('Choose an AI model in Settings → AI Engine.', { code: 'not_configured' });
   if (signal?.aborted) throw new AIError('Request cancelled', { code: 'aborted' });
   const engine = await host.get(cfg);
   const sys = [system, tools.length ? toolProtocol(tools) : ''].filter(Boolean).join('\n\n');
@@ -137,5 +137,5 @@ export async function chatJSON(cfg, { system, prompt, schema = null, maxTokens =
 /** Load the model (downloading it on first use) and run a tiny prompt. */
 export async function testEngine(cfg) {
   const r = await chat(cfg, { system: 'You are a connectivity check.', messages: [userMessage(cfg, 'Reply with the single word: ready')], maxTokens: 16 });
-  return { ok: /ready/i.test(r.text), text: r.text.trim().slice(0, 80), model: cfg.model };
+  return { ok: /ready/i.test(r.text), text: r.text.trim().slice(0, 80), model: host?.status?.model || '' };
 }

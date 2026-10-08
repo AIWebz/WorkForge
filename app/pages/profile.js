@@ -33,11 +33,14 @@ function filesLevel(employee) {
 const lvlTag = (level, label = LEVEL_SHORT[level]) => `<span class="small strong lvl-${level}">${esc(label)}</span>`;
 const domainsOf = (employee) => employee.browser?.domains || [];
 
-const TABS = [['overview', 'Overview'], ['chat', 'Chat'], ['scripts', 'Scripts'], ['workflows', 'Workflows'], ['memory', 'Memory'], ['tools', 'Tools'], ['files', 'Files'], ['systems', 'Systems'], ['permissions', 'Permissions'], ['activity', 'Activity'], ['performance', 'Performance']];
+const TABS = [['overview', 'Overview'], ['chat', 'Chat'], ['workflow', 'Workflow'], ['access', 'Access'], ['knowledge', 'Knowledge'], ['activity', 'Activity'], ['performance', 'Performance']];
+// Older links (and the command palette) may use the previous, finer-grained tab names.
+const TAB_ALIASES = { scripts: 'workflow', workflows: 'workflow', systems: 'access', permissions: 'access', tools: 'access', memory: 'knowledge', files: 'knowledge' };
 
 export default async function profile(ctx) {
   const { el, app, params, navigate } = ctx;
-  const tab = TABS.some(([t]) => t === params.tab) ? params.tab : 'overview';
+  const wanted = TAB_ALIASES[params.tab] || params.tab;
+  const tab = TABS.some(([t]) => t === wanted) ? wanted : 'overview';
   let employee = await app.db.get('employees', params.id);
   if (!employee) {
     el.innerHTML = `<div class="page">${emptyState('user-x', 'Employee not found', 'It may have been deleted.', '<a class="btn" href="#/employees">Back to employees</a>')}</div>`;
@@ -87,14 +90,24 @@ export default async function profile(ctx) {
     refreshIcons();
   };
 
-  const tabs = { overview, chat, scripts, workflows, memory, tools, files, systems, permissions, activity, performance };
+  // Combined tabs: each renders its sections into its own container.
+  const stack = (...parts) => async (o) => {
+    o.host.innerHTML = parts.map(([id, title]) => `<section class="tab-section">${title ? `<h2 class="tab-section-title">${title}</h2>` : ''}<div id="sec-${id}"></div></section>`).join('');
+    for (const [id, , fn] of parts) await fn({ ...o, host: o.host.querySelector(`#sec-${id}`) });
+  };
+  const tabs = {
+    overview, chat, activity, performance,
+    workflow: stack(['wf', '', workflows], ['scripts', 'Scripts', scripts]),
+    access: stack(['systems', 'Systems', systems], ['perms', 'Permissions', permissions], ['tools', 'Tools', tools]),
+    knowledge: stack(['memory', 'Memory', memory], ['files', 'Knowledge files', files]),
+  };
   const renderTab = async () => { if (ctx.isCurrent()) { await tabs[tab]({ host, app, employee, reload, ctx, navigate }); refreshIcons(); } };
   await renderHead();
   await renderTab();
   ctx.watch(['employees'], async () => { if (!(await reload())) return navigate('/employees'); renderHead(); if (!['chat'].includes(tab)) renderTab(); });
   ctx.watch(['tasks'], () => renderHead(), 600);
-  ctx.watch(['connections'], () => { renderHead(); if (['systems', 'permissions', 'tools', 'scripts', 'workflows', 'overview'].includes(tab)) renderTab(); }, 400);
-  if (['overview', 'activity', 'performance', 'workflows'].includes(tab)) ctx.watch(['tasks', 'activity', 'versions', 'approvals'], () => renderTab(), 700);
+  ctx.watch(['connections'], () => { renderHead(); if (['access', 'workflow', 'overview'].includes(tab)) renderTab(); }, 400);
+  if (['overview', 'activity', 'performance', 'workflow'].includes(tab)) ctx.watch(['tasks', 'activity', 'versions', 'approvals'], () => renderTab(), 700);
 }
 
 // ------------------------------------------------------------ Run task
@@ -388,7 +401,7 @@ async function memory({ host, app, employee }) {
   host.innerHTML = `<div class="grid-2" style="grid-template-columns: 1.4fr 1fr; align-items:start">
     <div class="col gap-16">${groups.map(([k, list]) => `<div class="card"><div class="card-head"><h3>${MEMORY_KINDS[k]}</h3><span class="badge">${list.length}</span></div>
       <div class="card-body">${k === 'files' ? '' : list.length ? `<div class="feed">${list.slice(0, 30).map((m) => `<div class="feed-item"><div class="grow"><div class="small" style="white-space:pre-wrap">${esc(truncate(m.content, 600))}</div><div class="time">${timeAgo(m.createdAt)} · ${esc(m.source || '')}${m.role ? ` · ${esc(m.role)}` : ''}</div></div><button class="btn btn-xs btn-ghost" data-del="${m.id}" title="Forget">${icon('trash-2')}</button></div>`).join('')}</div>${list.length > 30 ? `<p class="tiny muted mt-8">+${list.length - 30} more</p>` : ''}` : '<p class="small muted">Empty</p>'}</div></div>`).join('')}
-      <div class="card"><div class="card-head"><h3>Connected file knowledge</h3><a class="small" href="#/employees/${employee.id}/files">Manage</a></div><div class="card-body small">${employee.collections.length ? `${employee.collections.length} collection(s) searchable by this employee.` : 'No collections granted.'}</div></div>
+      <div class="card"><div class="card-head"><h3>Connected file knowledge</h3><a class="small" href="#/employees/${employee.id}/knowledge">Manage</a></div><div class="card-body small">${employee.collections.length ? `${employee.collections.length} collection(s) searchable by this employee.` : 'No collections granted.'}</div></div>
     </div>
     <div class="col gap-16">
       <div class="card card-pad form-grid"><h3>Add memory</h3>
@@ -502,8 +515,8 @@ async function systems({ host, app, employee }) {
   };
   const domains = domainsOf(employee);
   host.innerHTML = `${!bridge.paired && sysIds.length ? `<div class="callout warn mb-16">${icon('puzzle')}<div class="small">${esc(employee.name)} works in these systems through the WorkForge browser extension, signed in as you. <a href="#/extension">Install and pair the extension</a> before running tasks.</div></div>` : ''}
-    ${sysIds.length ? `<div class="grid-2">${sysIds.map(card).join('')}</div>` : emptyState('app-window', 'No systems', `${esc(employee.name)} doesn't work in any web app yet. Add one under Permissions, or select systems for a script.`, `<a class="btn" href="#/employees/${employee.id}/permissions">Open Permissions</a>`)}
-    <div class="card card-pad mt-16"><div class="between"><div class="row">${sysIcon('browser', true)}<h3>Other websites</h3></div><a class="small" href="#/employees/${employee.id}/permissions">Edit</a></div>
+    ${sysIds.length ? `<div class="grid-2">${sysIds.map(card).join('')}</div>` : emptyState('app-window', 'No systems', `${esc(employee.name)} doesn't work in any web app yet. Add one under Permissions, or select systems for a script.`, `<a class="btn" href="#/employees/${employee.id}/access">Open Permissions</a>`)}
+    <div class="card card-pad mt-16"><div class="between"><div class="row">${sysIcon('browser', true)}<h3>Other websites</h3></div><a class="small" href="#/employees/${employee.id}/access">Edit</a></div>
       <p class="small muted mt-8">${domains.length ? `May read and navigate (never click or type): ${domains.map((d) => `<span class="tag">${esc(d)}</span>`).join(' ')}` : 'None. Outside its systems the employee cannot read or open other websites.'}</p></div>
     <p class="help mt-16">Connecting a system stores only its address in this browser. No passwords, tokens or API keys: the employee uses your existing browser session, and you stay signed in yourself.</p>`;
   host.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
@@ -536,7 +549,7 @@ async function permissions({ host, app, employee }) {
       <select class="select select-sm" style="width:200px" id="add-sys"><option value="">+ Add system</option>${groups.map(([g, ids]) => `<optgroup label="${esc(g)}">${ids.map((id) => `<option value="${esc(id)}">${esc(all[id].name)}${connected.has(id) ? '' : ' (not connected)'}</option>`).join('')}</optgroup>`).join('')}</select></div>
       <div class="table-wrap"><table class="perm-table"><thead><tr><th>System</th>${SYSTEM_SCOPES.map((sc) => `<th>${SCOPE_LABELS[sc]}</th>`).join('')}<th></th></tr></thead><tbody>
       ${active.map((s) => `<tr><td><div class="row">${sysIcon(s, true, systemName(s, conns))}<div><div class="strong small">${esc(systemName(s, conns))}</div>${connected.has(s) ? '' : `<button class="link-btn tiny" data-connect="${esc(s)}">Not connected — connect</button>`}</div></div></td>${SYSTEM_SCOPES.map((sc) => `<td>${sel(s, sc)}</td>`).join('')}<td><button class="btn btn-xs btn-ghost" data-revoke="${esc(s)}" title="Remove ${esc(systemName(s, conns))}">${icon('x')}</button></td></tr>`).join('') || `<tr><td colspan="${SYSTEM_SCOPES.length + 2}" class="muted small">No systems yet. Add one to let ${esc(employee.name)} work in it.</td></tr>`}
-      <tr><td><div class="row">${sysIcon('files', true)}<span class="strong small">Knowledge files</span></div></td><td colspan="${SYSTEM_SCOPES.length}" class="small">${employee.collections.length ? `Read ${lvlTag(filesLevel(employee))} · ${employee.collections.length} collection(s)` : 'No collections granted'} · <a href="#/employees/${employee.id}/files">manage</a></td><td></td></tr>
+      <tr><td><div class="row">${sysIcon('files', true)}<span class="strong small">Knowledge files</span></div></td><td colspan="${SYSTEM_SCOPES.length}" class="small">${employee.collections.length ? `Read ${lvlTag(filesLevel(employee))} · ${employee.collections.length} collection(s)` : 'No collections granted'} · <a href="#/employees/${employee.id}/knowledge">manage</a></td><td></td></tr>
       </tbody></table></div>
       ${app.settings?.approveAllOutbound ? `<div class="card-body"><div class="callout">${icon('shield')}<div class="small">Workspace setting active: every click and typing step needs approval, whatever the levels here.</div></div></div>` : ''}
     </div>

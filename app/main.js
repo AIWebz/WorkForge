@@ -202,7 +202,6 @@ async function refreshChrome() {
     wsName.classList.toggle('placeholder', !desc);
     wsName.title = desc;
   }
-  const ai = await app.getAI();
   const gpu = await app.engine.gpuInfo();
   const st = app.engine.status;
   const card = document.getElementById('engine-card');
@@ -211,7 +210,7 @@ async function refreshChrome() {
     const aiCls = !gpu.supported || st.state === 'error' ? 'err' : st.state === 'loading' ? 'warn' : 'ok';
     const extCls = bridge.paired ? 'ok' : bridge.available ? 'warn' : '';
     card.innerHTML = `<div class="eng-row"><span class="section-title">AI engine</span><span class="status-label ${aiCls}"><span class="dot"></span>${esc(label)}</span></div>
-      <div class="eng-model ellipsis mt-4" title="${esc(ai.model)}">${gpu.supported ? esc(ai.model.replace(/-q4f(16|32)_1-MLC$/, '')) : 'Needs a WebGPU browser'}</div>
+      <div class="eng-model ellipsis mt-4">${!gpu.supported ? 'Needs a WebGPU browser' : st.model ? esc(st.model.replace(/-q4f(16|32)_1-MLC$/, '')) : 'Starts automatically'}</div>
       <div class="eng-row mt-8"><span class="tiny muted">Extension</span><span class="status-label ${extCls}"><span class="dot"></span>${bridge.paired ? 'Connected' : bridge.available ? 'Not paired' : 'Not installed'}</span></div>`;
     card.onclick = () => navigate('/settings/ai');
     card.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.onclick(); } };
@@ -265,6 +264,7 @@ async function openPalette() {
     const groups = [];
     const actions = [
       { icon: 'plus', label: 'Create employee', hint: 'action', run: () => navigate('/create'), text: 'create new employee generate hire' },
+      { icon: 'octagon-pause', label: 'Pause all employees', hint: 'emergency stop', run: async () => { const { setAllEmployees } = await import('./state.js'); const n = await setAllEmployees('paused'); toast(`${n} employee${n === 1 ? '' : 's'} paused`, 'success'); }, text: 'pause all stop emergency halt employees' },
       { icon: 'app-window', label: 'Connect a system', hint: 'action', run: () => navigate('/systems'), text: 'connect add system web app integration' },
       { icon: 'puzzle', label: 'Set up the browser extension', hint: 'action', run: () => navigate('/extension'), text: 'install pair browser extension' },
       { icon: 'cpu', label: 'AI engine settings', hint: 'action', run: () => navigate('/settings/ai'), text: 'ai engine model gpu download settings' },

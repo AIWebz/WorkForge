@@ -11,7 +11,7 @@ export default async function dashboard(ctx) {
     const [employees, tasks, approvals, connections, activityAll, stats, aiReady] = await Promise.all([
       app.db.all('employees'), app.db.all('tasks'), app.db.byIndex('approvals', 'status', 'pending'), app.getConnections(), app.db.all('activity'), computeStats(app.db), app.aiReady(),
     ]);
-    const activity = activityAll.sort((a, b) => b.ts - a.ts).slice(0, 14);
+    const activity = activityAll.filter((a) => !['ai_message', 'tool_call', 'tool_result'].includes(a.type)).sort((a, b) => b.ts - a.ts).slice(0, 7);
     const empById = Object.fromEntries(employees.map((e) => [e.id, e]));
     const live = (id) => tasks.filter((t) => t.employeeId === id && ['running', 'waiting_approval', 'queued'].includes(t.status)).sort((a, b) => b.createdAt - a.createdAt)[0];
     const lastTask = (id) => tasks.filter((t) => t.employeeId === id).sort((a, b) => b.createdAt - a.createdAt)[0];
@@ -23,7 +23,6 @@ export default async function dashboard(ctx) {
 
     const setup = [
       [!!app.business, 'Describe your business', '#/settings/business'],
-      [aiReady, 'Connect the AI engine', '#/settings/ai'],
       [employees.length > 0, 'Generate your first employee', '#/create'],
       [connected > 0, 'Connect your systems', '#/systems'],
       [bridge.paired, 'Install the browser extension', '#/extension'],
@@ -32,17 +31,14 @@ export default async function dashboard(ctx) {
 
     el.innerHTML = `<div class="page">
       <div class="page-head"><div><h1>${greet}. Here's what your workforce is doing.</h1><p>${working ? `${working} employee${working > 1 ? 's' : ''} working right now` : employees.length ? 'All employees are idle' : 'You have no employees yet'} · ${approvals.length} approval${approvals.length === 1 ? '' : 's'} waiting</p></div>
-      <a class="btn btn-primary" href="#/create">${icon('sparkles')} Create Employee</a></div>
+</div>
       ${setupDone < setup.length ? `<div class="card card-pad mb-16"><div class="between"><h3>Get set up</h3><span class="small muted">${setupDone}/${setup.length} complete</span></div><div class="meter mt-8"><span style="width:${(setupDone / setup.length) * 100}%"></span></div>
         <div class="row wrap mt-12 gap-6">${setup.map(([ok, label, href]) => `<a class="chip" href="${href}" style="${ok ? 'color:var(--success)' : ''}">${icon(ok ? 'check-circle-2' : 'circle')}${label}</a>`).join('')}</div></div>` : ''}
       <div class="stats">
-        ${stat('users', 'Active Employees', employees.filter((e) => e.status === 'active').length, `${employees.length} total`)}
-        ${stat('check-circle-2', 'Tasks Completed', stats.tasks.completed, `${stats.tasks.failed} failed`)}
-        ${stat('loader', 'Tasks Running', stats.tasks.running, `${stats.tasks.waiting} awaiting approval`)}
-        ${stat('shield-check', 'Human Approvals', approvals.length, 'pending', approvals.length ? '#/approvals' : '')}
-        ${stat('target', 'Success Rate', stats.successRate === null ? '—' : `${stats.successRate}%`, 'of finished tasks')}
-        ${stat('clock', 'Hours Saved', fmtHours(stats.minutesSaved), 'estimated from script runs')}
-        ${stat('plug', 'Connected Systems', connected, `${Object.keys(SYSTEMS).length} web apps + your own`, '#/systems')}
+        ${stat('users', 'Active employees', employees.filter((e) => e.status === 'active').length, `${employees.length} total`, '#/employees')}
+        ${stat('check-circle-2', 'Tasks completed', stats.tasks.completed, stats.successRate === null ? 'none finished yet' : `${stats.successRate}% success rate`, '#/tasks')}
+        ${stat('shield-check', 'Needs your approval', approvals.length, approvals.length ? 'open the Approval Center' : 'nothing waiting', approvals.length ? '#/approvals' : '')}
+        ${stat('clock', 'Time saved', fmtHours(stats.minutesSaved), 'estimated from completed steps', '#/reports')}
       </div>
       <div class="grid-2 mt-24" style="grid-template-columns: 1fr 340px; align-items:start">
         <div class="card">
@@ -51,8 +47,7 @@ export default async function dashboard(ctx) {
         </div>
         <div class="card">
           <div class="card-head"><h3>Recent Activity</h3><a class="small" href="#/activity">View all</a></div>
-          <div class="card-body" style="padding-top:4px">${activity.length ? `<div class="feed">${activity.map((a) => `<div class="feed-item">${empById[a.employeeId] ? avatar(empById[a.employeeId], 'avatar-sm') : `<span class="avatar avatar-sm" style="background:#cbd5e1">${icon('cpu')}</span>`}<div class="grow"><div><span class="status-dot" style="background:${statusColor(a.status)};margin-right:6px"></span>${esc(a.message)}</div><div class="time">${timeAgo(a.ts)}${a.scriptName ? ` · ${esc(a.scriptName)}` : ''}</div></div></div>`).join('')}</div>` : '<p class="small muted" style="padding:12px 0">Activity from real executions appears here.</p>'}
-            <div class="row small mt-12"><span class="status-dot" style="background:${aiReady ? 'var(--success)' : 'var(--warning)'}"></span>${aiReady ? 'AI engine ready' : 'AI engine not configured'}</div>
+          <div class="card-body" style="padding-top:4px">${activity.length ? `<div class="feed">${activity.map((a) => `<div class="feed-item">${empById[a.employeeId] ? avatar(empById[a.employeeId], 'avatar-sm') : `<span class="avatar avatar-sm" style="background:#cbd5e1">${icon('cpu')}</span>`}<div class="grow"><div class="feed-msg"><span class="status-dot" style="background:${statusColor(a.status)};margin-right:6px"></span>${esc(String(a.message).length > 110 ? `${String(a.message).slice(0, 110)}…` : a.message)}</div><div class="time">${timeAgo(a.ts)}${a.scriptName ? ` · ${esc(a.scriptName)}` : ''}</div></div></div>`).join('')}</div>` : '<p class="small muted" style="padding:12px 0">Activity from real executions appears here.</p>'}
           </div>
         </div>
       </div>

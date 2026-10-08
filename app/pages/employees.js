@@ -1,4 +1,5 @@
-import { esc, icon, refreshIcons, emptyState, toast } from '../ui.js';
+import { esc, icon, refreshIcons, emptyState, toast, confirmDialog } from '../ui.js';
+import { setAllEmployees } from '../state.js';
 import { employeeCard } from './dashboard.js';
 import { normalizeEmployee } from '../../extension/core/employee.js';
 import { uid } from '../../extension/core/util.js';
@@ -16,11 +17,17 @@ export default async function employees(ctx) {
     const list = emps.filter((e) => filter === 'all' || e.status === filter).sort((a, b) => b.createdAt - a.createdAt);
     el.innerHTML = `<div class="page">
       <div class="page-head"><div><h1>Employees</h1><p>Every employee was generated for your business by the AI engine.</p></div>
-        <div class="row"><label class="btn">${icon('upload')} Import<input type="file" accept="application/json" id="import" hidden></label><a class="btn btn-primary" href="#/create">${icon('plus')} Create Employee</a></div></div>
+        <div class="row">${emps.some((e) => e.status === 'active') ? `<button class="btn btn-danger" id="pause-all" title="Emergency stop">${icon('octagon-pause')} Pause all</button>` : emps.some((e) => e.status === 'paused') ? `<button class="btn" id="resume-all">${icon('play')} Resume all</button>` : ''}<label class="btn">${icon('upload')} Import<input type="file" accept="application/json" id="import" hidden></label></div></div>
       <div class="seg mb-16">${['all', 'active', 'draft', 'paused'].map((f) => `<button data-f="${f}" class="${filter === f ? 'active' : ''}">${f[0].toUpperCase() + f.slice(1)} (${f === 'all' ? emps.length : emps.filter((e) => e.status === f).length})</button>`).join('')}</div>
       ${list.length ? `<div class="grid-3">${list.map((e) => employeeCard(e, latest(e.id), connections)).join('')}</div>` : emptyState('users', emps.length ? 'No employees match this filter' : 'No employees yet', 'Describe the work you need and the AI engine will build a complete employee with scripts, tools, memory and permissions.', '<a class="btn btn-primary" href="#/create">Create Employee</a>')}
     </div>`;
     el.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { filter = b.dataset.f; render(); });
+    el.querySelector('#pause-all')?.addEventListener('click', async () => {
+      if (!(await confirmDialog('Pause every active employee? Running tasks stop after their current step; nothing new starts until you resume.', { confirm: 'Pause all', danger: true }))) return;
+      const n = await setAllEmployees('paused');
+      toast(`${n} employee${n === 1 ? '' : 's'} paused`, 'success');
+    });
+    el.querySelector('#resume-all')?.addEventListener('click', async () => { const n = await setAllEmployees('active'); toast(`${n} employee${n === 1 ? '' : 's'} resumed`, 'success'); });
     el.querySelector('#import').onchange = async (e) => {
       try {
         const data = JSON.parse(await e.target.files[0].text());

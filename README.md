@@ -19,20 +19,20 @@ WorkForge turns a plain-language description of a job into an AI employee and ru
 
 **Locally:** run `python3 -m http.server` in the repo and open `http://localhost:8000`.
 
-**Requirements:** a WebGPU browser (recent Chrome, Edge or Brave) on a computer with a GPU. Each model option lists the GPU memory it needs. On GPUs without 16-bit shader support, WorkForge automatically uses the 32-bit build.
+**Requirements:** a WebGPU browser (recent Chrome, Edge or Brave) on a computer with a GPU. There is nothing to set up: WorkForge picks the best model your GPU can hold (Qwen 2.5 3B, or 1.5B on smaller GPUs), downloads it once in the background, and falls back to the smaller model if loading fails. On GPUs without 16-bit shader support it uses the 32-bit build.
 
 ### Self-host the model (optional)
 By default the model weights download once from the public open-model mirror (Hugging Face) and are cached by the browser. To serve them from your own GitHub Pages site instead:
 
 1. Go to **Settings → Secrets and variables → Actions → Variables** and add `WORKFORGE_MODEL`, for example `Qwen2.5-1.5B-Instruct-q4f16_1-MLC`. Several ids can be comma-separated.
 2. Re-run the Pages workflow. `.github/scripts/fetch-model.mjs` downloads the weights into `models/` during the deploy and lists them in `models/manifest.json`.
-3. In the app, open **Settings → AI Engine** and choose **Download the model from: This site**.
+3. Nothing to change in the app. When `models/manifest.json` lists models, WorkForge loads them from your site automatically.
 
 GitHub Pages sites are limited to about 1 GB, so pick a small model to self-host.
 
 ## First steps
 1. **Onboarding:** describe what your business does and what to automate, then pick your systems. You're never asked for a company name.
-2. **Settings → AI Engine:** choose a model and click **Load & test**. The first load downloads it.
+2. **AI engine:** nothing to do. It starts by itself in the background (progress shows in the sidebar). The first start downloads the model once.
 3. **Systems:** connect the web apps employees work in. Apps like Salesforce, Zendesk, Jira and monday.com ask for your address; nothing else is stored.
 4. **Browser Extension:** install it and click **Connect extension**.
 5. **Create Employee:** describe the work, generate, review and deploy. Then run a task from the profile, a schedule, or the extension side panel.
@@ -70,7 +70,7 @@ A Manifest V3 extension (Chromium 116+) that imports the same `extension/core` m
 ## Limitations (static hosting)
 - **Browser must stay open.** Schedules and follow-ups run while WorkForge is open in a tab; tasks started from the extension run while its side panel is open.
 - **No inbound webhooks.** Without a server, other apps can't push events in. Use schedules that check your inbox or CRM instead.
-- **Model quality depends on your GPU.** Small local models handle well-defined, step-by-step work best. Choose a bigger model when you have the GPU memory.
+- **Model quality depends on your GPU.** Small local models handle well-defined, step-by-step work best. WorkForge uses the largest model your GPU can hold.
 - **The extension has its own model copy.** It caches the model separately from the app, so it downloads once more there.
 
 ## Layout

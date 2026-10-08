@@ -1,0 +1,15 @@
+{
+  "name": "WorkForge — AI Employees",
+  "short_name": "WorkForge",
+  "description": "Describe the employee. WorkForge builds the entire system and runs it with an AI engine on your own device.",
+  "start_url": "./#/dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#f6f5f2",
+  "icons": [
+    { "src": "assets/img/logo.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "assets/img/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

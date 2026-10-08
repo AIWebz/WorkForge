@@ -12,7 +12,7 @@ import { SYSTEMS, hostOf } from '../extension/core/catalog.js';
 import { scheduleNext } from '../extension/core/employee.js';
 import { Emitter, uid, now } from '../extension/core/util.js';
 import { setEngineHost } from '../extension/core/ai.js';
-import { createEngineHost, DEFAULT_MODEL } from '../extension/core/engine.js';
+import { createEngineHost } from '../extension/core/engine.js';
 import { bridge } from './bridge.js';
 import { toast } from './ui.js';
 
@@ -46,30 +46,31 @@ export const app = {
     await migrateConnections();
   },
 
-  /** AI engine config: { model, source: { base? } }. base = this site when the model is self-hosted. */
+  /** AI engine config. The model is picked automatically; weights come from this site when it hosts them. */
   async getAI() {
-    const cfg = await db.getSetting('ai', {});
-    const model = cfg.model || DEFAULT_MODEL;
-    return { model, source: cfg.source === 'site' ? { base: siteBase() } : {}, sourceName: cfg.source === 'site' ? 'site' : 'mirror' };
+    const hosted = await this.hostedModels();
+    return { auto: true, hosted, source: hosted.length ? { base: siteBase() } : {} };
   },
 
-  async saveAI({ model, source }) {
-    await db.setSetting('ai', { model, source: source === 'site' ? 'site' : 'mirror' });
-    events.emit({ type: 'ai' });
-  },
-
-  /** Ready = a model is chosen and this browser can run it (WebGPU). It downloads on first use. */
+  /** Ready = this browser can run the on-device engine (WebGPU). The model downloads on first use. */
   async aiReady() {
-    const info = await engine.gpuInfo();
-    return info.supported && !!(await this.getAI()).model;
+    return (await engine.gpuInfo()).supported;
+  },
+
+  /** Download and load the model in the background so employees start instantly. */
+  async prepareEngine() {
+    if (!(await engine.gpuInfo()).supported) return false;
+    await engine.get(await this.getAI());
+    return true;
   },
 
   /** Models published by this site's GitHub Pages workflow (models/manifest.json), if any. */
   async hostedModels() {
+    if (this._hosted) return this._hosted;
     try {
       const r = await fetch(`${siteBase()}models/manifest.json`, { cache: 'no-store' });
-      if (!r.ok) return [];
-      return (await r.json()).models || [];
+      if (!r.ok) return (this._hosted = []);
+      return (this._hosted = (await r.json()).models || []);
     } catch { return []; }
   },
 
@@ -169,8 +170,27 @@ app.runtime = runtime;
 app.executor = executor;
 
 runtime.on((evt) => {
-  if (evt.type === 'approval') toast(evt.approval.summary, 'info', 6000);
+  if (evt.type !== 'approval') return;
+  toast(evt.approval.summary, 'info', 6000);
+  // Desktop notification when the tab is in the background (opt-in on the Approvals page).
+  try {
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification('WorkForge needs your approval', { body: evt.approval.summary, icon: 'assets/img/logo.svg', tag: evt.approval.id });
+      n.onclick = () => { window.focus(); location.hash = '#/approvals'; n.close(); };
+    }
+  } catch { /* notifications unavailable */ }
 });
+
+/** Emergency stop: pause (or resume) every employee. Running tasks stop after their current step. */
+export async function setAllEmployees(status) {
+  const emps = await db.all('employees');
+  let n = 0;
+  for (const e of emps) {
+    if (status === 'paused' && e.status === 'active') { await runtime.setEmployeeStatus(e.id, 'paused'); n++; }
+    if (status === 'active' && e.status === 'paused') { await runtime.setEmployeeStatus(e.id, 'active'); n++; }
+  }
+  return n;
+}
 
 // ---------------------------------------------------------------- scheduler
 async function schedulerTick() {
@@ -211,7 +231,13 @@ export function startBackground() {
     navigator.locks.request('workforge-leader', () => { becomeLeader(); return new Promise(() => {}); });
   } else becomeLeader();
   setInterval(schedulerTick, 20000);
-  events.on((e) => { if (e.type === 'ai' && bridge.paired) syncExtension().catch(() => {}); });
+  // Warm up the on-device AI engine in the leader tab once the user is inside the app.
+  setTimeout(() => {
+    const inApp = () => !/^#\/?$/.test(location.hash || '#/');
+    const warm = () => { if (app.isLeader && inApp() && !app._warming) { app._warming = true; app.prepareEngine().catch(() => {}); } };
+    warm();
+    window.addEventListener('hashchange', warm);
+  }, 3000);
 
   bridge.detect().then(() => { if (bridge.paired) syncExtension().catch(() => {}); });
   bridge.on(() => { events.emit({ type: 'bridge' }); if (bridge.paired) syncExtension().catch(() => {}); });

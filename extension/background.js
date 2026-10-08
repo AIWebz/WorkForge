@@ -123,8 +123,8 @@ async function sync(snap, origin) {
   for (const m of await db.all('memory')) if (!appIds.has(m.id) && m.createdAt < lastPullAt) await db.delete('memory', m.id);
   if (snap.memory?.length) await db.bulkPut('memory', snap.memory);
   await chrome.storage.local.set({ business: snap.business || null, settings: snap.settings || {}, appOrigin: origin, appUrl: snap.appUrl && snap.appUrl.startsWith(origin) ? snap.appUrl : `${origin}/`, lastSyncAt: Date.now() });
-  // Model choice for the local AI engine (not a secret). Self-hosted weights are fetched from the app's site.
-  if (snap.ai?.model) await chrome.storage.local.set({ ai: { model: snap.ai.model, source: snap.ai.source?.base ? { base: snap.ai.source.base } : {} } });
+  // Where the local AI engine loads weights from (the app's site when it self-hosts them). Not a secret.
+  if (snap.ai) await chrome.storage.local.set({ ai: { hosted: snap.ai.hosted || [], source: snap.ai.source?.base ? { base: snap.ai.source.base } : {} } });
   await chrome.storage.session.remove(['secrets', 'ai']).catch(() => {});
   return { ok: true, employees: snap.employees?.length || 0 };
 }

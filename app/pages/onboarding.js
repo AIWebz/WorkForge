@@ -1,6 +1,5 @@
 import { esc, icon, toast, refreshIcons, sysIcon } from '../ui.js';
 import { allSystems } from '../../extension/core/catalog.js';
-import { engineFormHtml, bindEngineForm } from './settings.js';
 import { startGeneration, systemsForForm } from './create.js';
 import { systemPickerHtml, bindSystemPicker, openConnectDialog } from './systems.js';
 import { bridge } from '../bridge.js';
@@ -80,13 +79,14 @@ export default async function onboarding(ctx) {
   }
 
   async function stepSystems(host) {
-    const [engineForm, rows] = await Promise.all([engineFormHtml(), app.getConnections()]);
+    const rows = await app.getConnections();
+    const gpu = await app.engine.gpuInfo();
+    if (gpu.supported) app.prepareEngine().catch(() => {}); // start downloading the model while the user finishes setup
     const all = allSystems(rows);
     const connected = new Set(rows.map((r) => r.id));
     const mine = state.business.systems.filter((id) => all[id]);
     host.innerHTML = `<div class="form-grid">
-      <div><h3>${icon('cpu')} Choose the AI engine</h3><p class="small muted mt-4">WorkForge's AI engine is an open-source model that runs on this computer's GPU. No account, no API key — it downloads once and your data never leaves this device.</p></div>
-      <div class="card card-pad" style="background:var(--surface-2)">${engineForm}</div>
+      ${gpu.supported ? `<div class="callout">${icon('cpu')}<div class="small"><strong>The AI engine is getting ready in the background.</strong> It runs on this computer — nothing to set up, no account or key.</div></div>` : `<div class="callout danger">${icon('alert-triangle')}<div class="small">${esc(gpu.reason)}</div></div>`}
       <div><h3>${icon('app-window')} Your systems</h3><p class="small muted mt-4">Optional now — connect them any time from Systems. Employees open them in browser tabs with your login and ask before clicking or typing.</p>
         ${mine.length ? `<div class="col gap-6 mt-8">${mine.map((id) => `<div class="between" style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;background:var(--surface)"><div class="row">${sysIcon(id, true, all[id].name)}<span class="small strong">${esc(all[id].name)}</span></div>${connected.has(id) ? '<span class="small s-ok">Connected</span>' : `<button class="btn btn-xs" data-connect="${esc(id)}">${icon('plus')} Connect</button>`}</div>`).join('')}</div>` : '<p class="help mt-8">You did not pick any systems. You can add them later in Systems.</p>'}
         ${bridge.paired ? '' : `<div class="callout mt-8">${icon('puzzle')}<div class="small">Employees need the WorkForge browser extension to work in these systems. <a href="#/extension" target="_blank" rel="noopener">Set it up</a> now or after generating.</div></div>`}
@@ -94,13 +94,9 @@ export default async function onboarding(ctx) {
       <div class="between"><button class="btn btn-ghost" id="back">${icon('arrow-left')} Back</button><button class="btn btn-primary" id="next">Continue ${icon('arrow-right')}</button></div>
     </div>`;
     host.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
-    bindEngineForm(host);
     host.querySelector('#back').onclick = () => { state.step = 1; render(); };
     host.querySelector('#next').onclick = async () => {
-      const gpu = await app.engine.gpuInfo();
       if (!gpu.supported) return toast(gpu.reason, 'error');
-      const picked = host.querySelector('[name=ai-model]:checked')?.value;
-      if (picked) await app.saveAI({ model: picked, source: host.querySelector('#ai-source .active')?.dataset.src || 'mirror' });
       state.step = 3;
       render();
     };
