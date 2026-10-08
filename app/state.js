@@ -1,10 +1,15 @@
-// Application context: database, credential vault, AI engine config, runtime,
+// Application context: database, AI key vault, AI engine config, runtime,
 // tool executor, scheduler and extension sync — the single source of truth the
 // pages render from.
+//
+// There are no third-party API calls here. The only network traffic the app
+// makes is to the user's AI provider (the AI engine). Employees work inside
+// systems (web apps) through the WorkForge browser extension, in browser tabs
+// that use the owner's own signed-in session.
 import { DB } from '../extension/core/db.js';
 import { Runtime } from '../extension/core/runtime.js';
 import { createToolExecutor } from '../extension/core/tools.js';
-import { CONNECTIONS } from '../extension/core/catalog.js';
+import { SYSTEMS, hostOf } from '../extension/core/catalog.js';
 import { scheduleNext } from '../extension/core/employee.js';
 import { Emitter, uid, now } from '../extension/core/util.js';
 import { vault } from './vault.js';
@@ -14,17 +19,26 @@ import { toast } from './ui.js';
 export const db = new DB('workforge');
 export const events = new Emitter();
 
+export const EXTENSION_REQUIRED = 'Install and connect the WorkForge browser extension so employees can work in your systems.';
+
 export const app = {
   db, vault, bridge, events,
   jobs: {},
   isLeader: false,
-  settings: { approveAllOutbound: false, shareCredentialsWithExtension: true },
+  settings: { approveAllOutbound: false, shareAiKeyWithExtension: true },
   business: null,
 
   async load() {
     await db.open();
-    this.settings = { ...this.settings, ...(await db.getSetting('security', {})) };
-    this.business = await db.getSetting('business', null);
+    const stored = await db.getSetting('security', {});
+    const { shareCredentialsWithExtension, ...rest } = stored || {};
+    this.settings = { approveAllOutbound: false, shareAiKeyWithExtension: true, ...rest };
+    if (rest.shareAiKeyWithExtension === undefined && shareCredentialsWithExtension !== undefined) {
+      this.settings.shareAiKeyWithExtension = !!shareCredentialsWithExtension;
+    }
+    if (shareCredentialsWithExtension !== undefined) await db.setSetting('security', this.settings);
+    this.business = await migrateBusiness(await db.getSetting('business', null));
+    await migrateConnections();
   },
 
   async getAI() {
@@ -43,20 +57,21 @@ export const app = {
     return !!(c.provider && c.model && (c.provider === 'compatible' ? c.baseUrl : c.apiKey));
   },
 
-  async getConnection(id) {
-    const c = await db.get('connections', id);
-    if (!c) return null;
-    return { ...c, secrets: vault.get(`conn.${id}`) || {} };
+  /** Connected systems: rows of the `connections` store ({ id, url?, custom?, name?, description?, addedAt }). */
+  getConnections() {
+    return db.all('connections');
   },
 
+  /** Convenience: connected systems keyed by system id. */
   async connectionMap() {
     const rows = await db.all('connections');
     return Object.fromEntries(rows.map((r) => [r.id, r]));
   },
 
   async saveBusiness(b) {
-    this.business = b;
-    await db.setSetting('business', b);
+    const clean = { description: b.description || '', automate: b.automate || '', systems: [...new Set(b.systems || [])] };
+    this.business = clean;
+    await db.setSetting('business', clean);
   },
 
   async saveSecurity(patch) {
@@ -65,36 +80,55 @@ export const app = {
   },
 };
 
-// ---------------------------------------------------------------- transport
-async function relay(url, init) {
-  const r = await bridge.relayFetch(url, init);
-  return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => r.body ?? '' };
+// ---------------------------------------------------------------- migrations
+// Business profile is { description, automate, systems: [systemId] } — no company name.
+async function migrateBusiness(b) {
+  if (!b) return null;
+  const byName = Object.fromEntries(Object.entries(SYSTEMS).map(([id, s]) => [s.name.toLowerCase(), id]));
+  const systems = [...new Set((b.systems || []).map((s) => (SYSTEMS[s] ? s : byName[String(s).toLowerCase()]))
+    .flatMap((s) => (s ? [s] : [])))];
+  const clean = { description: b.description || '', automate: b.automate || '', systems };
+  if ('name' in b || JSON.stringify(systems) !== JSON.stringify(b.systems || [])) await db.setSetting('business', clean);
+  return clean;
 }
 
-export const transport = {
-  async fetch(url, init = {}, { mode = 'direct' } = {}) {
-    const host = new URL(url).host;
-    if (mode === 'relay') {
-      if (!bridge.paired) throw new Error(`${host} does not accept requests from web pages (CORS). Install and connect the WorkForge extension (Browser Extension page) so it can relay this call.`);
-      return relay(url, init);
-    }
-    try {
-      const res = await fetch(url, init);
-      return { ok: res.ok, status: res.status, text: () => res.text() };
-    } catch (e) {
-      if (mode === 'direct-or-relay' && bridge.paired) return relay(url, init);
-      throw new Error(`The request to ${host} was blocked by the browser (CORS or network).${bridge.paired ? '' : ' Connect the WorkForge extension to relay requests to services that block browsers.'}`);
-    }
-  },
-};
+// Older versions stored API connections ({ status, config, account } + tokens in the
+// vault). A system is now connected iff a row exists; keep only what maps to a system.
+async function migrateConnections() {
+  const rows = await db.all('connections');
+  const legacy = rows.filter((r) => 'config' in r || 'status' in r || 'lastTest' in r);
+  if (!legacy.length) return;
+  const at = now();
+  for (const r of legacy) {
+    await db.delete('connections', r.id);
+    const cfg = r.config || {};
+    const add = [];
+    if (r.id === 'google') add.push(...['gmail', 'google_calendar', 'google_drive', 'google_sheets'].map((id) => ({ id })));
+    else if (r.id === 'salesforce' && /^https:\/\//.test(cfg.instanceUrl || '')) add.push({ id: 'salesforce', url: cfg.instanceUrl });
+    else if (r.id === 'zendesk' && /^[a-z0-9-]+$/i.test(cfg.subdomain || '')) add.push({ id: 'zendesk', url: `https://${cfg.subdomain}.zendesk.com/agent` });
+    else if (SYSTEMS[r.id] && !SYSTEMS[r.id].address) add.push({ id: r.id });
+    for (const row of add) if (!(await db.get('connections', row.id))) await db.put('connections', { ...row, addedAt: r.connectedAt || at });
+  }
+}
 
+// ---------------------------------------------------------------- tool executor
+// Browser work happens in a working tab the extension opens and drives.
 export const executor = createToolExecutor({
   db,
-  getConnection: (id) => app.getConnection(id),
-  transport,
+  getConnections: () => app.getConnections(),
   browser: {
+    async open(url) {
+      if (!bridge.paired) throw new Error(EXTENSION_REQUIRED);
+      try {
+        return await bridge.openTab(url, { active: false });
+      } catch (e) {
+        if (e.code === 'no_host_permission') throw new Error(`The WorkForge extension has no site access to ${hostOf(url) || url}. Open Systems and click “Grant site access”.`);
+        throw e;
+      }
+    },
     async exec(action, args, { task }) {
-      if (!bridge.paired) throw new Error('Browser tools need the WorkForge extension to be installed and connected.');
+      if (!bridge.paired) throw new Error(EXTENSION_REQUIRED);
+      if (!task?.browser?.tabId) throw new Error('No working tab — call browser_open first.');
       return bridge.browserAction(task.browser.tabId, action, args);
     },
   },
@@ -112,6 +146,7 @@ export const runtime = new Runtime({
   executor,
   getSettings: async () => app.settings,
   getBusiness: async () => app.business,
+  getConnections: () => app.getConnections(),
   origin: 'app',
 });
 app.runtime = runtime;
@@ -160,7 +195,10 @@ export function startBackground() {
     navigator.locks.request('workforge-leader', () => { becomeLeader(); return new Promise(() => {}); });
   } else becomeLeader();
   setInterval(schedulerTick, 20000);
-  vault.onChange(() => { if (!vault.locked && app.isLeader) runtime.recover(); });
+  vault.onChange(() => {
+    if (!vault.locked && app.isLeader) runtime.recover();
+    if (bridge.paired) syncExtension().catch(() => {});
+  });
 
   bridge.detect().then(() => { if (bridge.paired) syncExtension().catch(() => {}); });
   bridge.on(() => { events.emit({ type: 'bridge' }); if (bridge.paired) syncExtension().catch(() => {}); });
@@ -179,6 +217,7 @@ export function startBackground() {
 }
 
 // ---------------------------------------------------------------- extension sync
+// Nothing secret is synced except the AI key, and only when the owner allows it.
 export async function syncExtension() {
   if (!bridge.paired) throw new Error('Extension not connected');
   const [employees, memory, collections, files, connections] = await Promise.all([
@@ -187,18 +226,18 @@ export async function syncExtension() {
   const granted = new Set(employees.flatMap((e) => e.collections || []));
   const chunks = [];
   for (const cid of granted) chunks.push(...(await db.byIndex('chunks', 'collectionId', cid)));
-  const share = app.settings.shareCredentialsWithExtension && !vault.locked;
-  const secrets = {};
-  if (share) {
-    for (const c of connections) if (vault.get(`conn.${c.id}`)) secrets[c.id] = vault.get(`conn.${c.id}`);
-  }
-  const ai = share ? await app.getAI() : null;
-  const r = await bridge.sync({
+  const snapshot = {
     employees, memory, collections, files: files.filter((f) => granted.has(f.collectionId)).map(({ dataUrl, ...f }) => f), chunks,
-    connections, secrets, ai, business: app.business, settings: { approveAllOutbound: app.settings.approveAllOutbound },
+    connections: connections.map(({ id, url, custom, name, description, addedAt }) => ({ id, url, custom, name, description, addedAt })),
+    business: app.business, settings: { approveAllOutbound: app.settings.approveAllOutbound },
     appUrl: location.origin + location.pathname,
     syncedAt: now(),
-  });
+  };
+  if (app.settings.shareAiKeyWithExtension && !vault.locked) {
+    const ai = await app.getAI();
+    if (ai.provider && ai.model) snapshot.ai = ai;
+  }
+  const r = await bridge.sync(snapshot);
   await pullFromExtension();
   return r;
 }
@@ -214,5 +253,3 @@ export async function pullFromExtension() {
   if (r.memory?.length) await db.bulkPut('memory', r.memory);
   await db.setSetting('ext.pulledAt', r.now || now());
 }
-
-export const CONNECTION_DEFS = CONNECTIONS;

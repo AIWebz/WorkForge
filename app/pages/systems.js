@@ -1,184 +1,293 @@
-import { esc, icon, sysIcon, statusBadge, timeAgo, refreshIcons, toast, modal, confirmDialog, emptyState, loadScript } from '../ui.js';
-import { CONNECTIONS, SYSTEMS } from '../../extension/core/catalog.js';
+// Systems: the web apps employees work in. A system is connected when a row
+// exists in the `connections` store. There are no tokens or keys: employees use
+// the owner's own signed-in browser session through the WorkForge extension,
+// which needs site access to each system (checked live, granted per system).
+import { esc, icon, sysIcon, toast, modal, confirmDialog, emptyState, refreshIcons, statusBadge } from '../ui.js';
+import { SYSTEMS, SYSTEM_GROUPS, allSystems, hostOf, systemOrigins, systemUrl, systemForUrl } from '../../extension/core/catalog.js';
 import { now } from '../../extension/core/util.js';
-import { transport } from '../state.js';
 import { bridge } from '../bridge.js';
-import { requestGoogleToken } from '../google.js';
 
-// Real connectivity checks against each provider's API.
-const TESTS = {
-  async slack(c, s) {
-    const r = await call('slack', 'https://slack.com/api/auth.test', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: s.token }).toString() });
-    if (!r.ok) throw new Error(`Slack: ${r.error}`);
-    return `${r.team} · ${r.user}`;
-  },
-  async hubspot(c, s) {
-    await call('hubspot', 'https://api.hubapi.com/crm/v3/objects/contacts?limit=1', { headers: { authorization: `Bearer ${s.token}` } });
-    return 'HubSpot CRM';
-  },
-  async salesforce(c, s) {
-    await call('salesforce', `${c.instanceUrl.replace(/\/$/, '')}/services/data/v61.0/`, { headers: { authorization: `Bearer ${s.accessToken}` } });
-    return new URL(c.instanceUrl).host;
-  },
-  async shopify(c, s) {
-    const host = c.shop.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    const r = await call('shopify', `https://${host}/admin/api/2024-10/shop.json`, { headers: { 'x-shopify-access-token': s.token } });
-    return r.shop?.name || host;
-  },
-  async notion(c, s) {
-    const r = await call('notion', 'https://api.notion.com/v1/users/me', { headers: { authorization: `Bearer ${s.token}`, 'notion-version': '2022-06-28' } });
-    return r.name || 'Notion integration';
-  },
-  async zendesk(c, s) {
-    const r = await call('zendesk', `https://${c.subdomain}.zendesk.com/api/v2/users/me.json`, { headers: { authorization: `Basic ${btoa(`${c.email}/token:${s.apiToken}`)}` } });
-    if (!r.user?.id) throw new Error('Zendesk did not authenticate this agent');
-    return r.user.email;
-  },
-  async database(c, s) {
-    await call('database', `${c.endpoint.replace(/\/$/, '')}/`, { headers: c.headerName ? { [c.headerName]: s.headerValue } : {} });
-    return new URL(c.endpoint).host;
-  },
-  async api(c, s) {
-    const res = await transport.fetch(c.baseUrl, { headers: c.headerName ? { [c.headerName]: s.headerValue } : {} }, { mode: 'direct-or-relay' });
-    if (res.status === 401 || res.status === 403) throw new Error(`Authentication failed (${res.status})`);
-    if (res.status >= 500) throw new Error(`Server error ${res.status}`);
-    return new URL(c.baseUrl).host;
-  },
-  async webhook() { return 'Webhook URL saved (not called during setup)'; },
-};
+const hostsOf = (origins) => origins.map((o) => o.replace(/^https:\/\//, '').replace(/\/\*$/, ''));
 
-async function call(connId, url, init) {
-  const res = await transport.fetch(url, init, { mode: CONNECTIONS[connId].transport });
-  const text = await res.text();
-  let body = text;
-  try { body = JSON.parse(text); } catch { /* text */ }
-  if (!res.ok) throw new Error(`${CONNECTIONS[connId].name} returned ${res.status}: ${body?.message || body?.error?.message || (typeof body === 'string' ? body.slice(0, 160) : '')}`);
-  return body;
+function hostMatches(pattern, host) {
+  const hostPat = pattern.split('/')[0].toLowerCase();
+  if (hostPat.startsWith('*.')) { const base = hostPat.slice(2); return host === base || host.endsWith(`.${base}`); }
+  return host === hostPat;
 }
 
-export async function testConnectionRecord(app, id) {
-  const rec = await app.db.get('connections', id);
-  const secrets = app.vault.get(`conn.${id}`) || {};
-  try {
-    let account;
-    if (id === 'google') {
-      if (!secrets.accessToken || secrets.expiresAt < Date.now()) throw new Error('Token expired — reconnect with Google');
-      const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { authorization: `Bearer ${secrets.accessToken}` } });
-      if (!r.ok) throw new Error(`Google returned ${r.status}`);
-      account = (await r.json()).email;
-    } else account = await TESTS[id](rec.config, secrets);
-    await app.db.put('connections', { ...rec, status: 'connected', account, lastTest: { ok: true, at: now(), message: 'OK' } });
-    return { ok: true, account };
-  } catch (e) {
-    await app.db.put('connections', { ...rec, status: 'error', lastTest: { ok: false, at: now(), message: e.message } });
-    return { ok: false, error: e.message };
+/**
+ * Validates the address a user entered for a system that needs one.
+ * Must be https and (unless the system accepts any host, like WordPress) match
+ * the system's host patterns. Returns the normalized URL.
+ */
+export function validateSystemAddress(systemId, value) {
+  const sys = SYSTEMS[systemId];
+  let raw = String(value || '').trim();
+  if (!raw) throw new Error(`Enter ${sys?.address?.label?.toLowerCase() || 'the address'}`);
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  let u;
+  try { u = new URL(raw); } catch { throw new Error('That is not a valid web address'); }
+  if (u.protocol !== 'https:') throw new Error('The address must start with https://');
+  const host = u.hostname.toLowerCase();
+  if (!host.includes('.')) throw new Error('Enter the full address, e.g. https://example.com');
+  const patterns = sys?.match || [];
+  if (patterns.length && !patterns.some((p) => hostMatches(p, host))) {
+    throw new Error(`${sys.name} addresses look like ${patterns.map((p) => p.split('/')[0]).join(' or ')}`);
   }
+  u.hash = '';
+  return u.href;
 }
 
-export function openConnectDialog(app, id) {
-  const def = CONNECTIONS[id];
-  if (app.vault.locked) return toast('Unlock the credential vault first (Settings → Security)', 'error');
-  if (id === 'google') loadScript('https://accounts.google.com/gsi/client').catch(() => {});
-  app.db.get('connections', id).then((existing) => {
-    const cfg = existing?.config || {};
-    const secrets = app.vault.get(`conn.${id}`) || {};
-    const relayNote = def.transport === 'relay'
-      ? `<div class="callout ${bridge.paired ? 'success' : 'warn'}">${icon('puzzle')}<div class="small">${esc(def.name)} blocks requests from web pages, so WorkForge relays calls through the browser extension. ${bridge.paired ? 'Extension connected ✓' : '<a href="#/extension">Install and connect the extension</a> before testing.'}</div></div>`
-      : def.transport === 'direct-or-relay' ? `<p class="help">Calls go directly from your browser when the service allows it (CORS); otherwise through the extension relay${bridge.paired ? ' (connected)' : ''}.</p>` : '';
-    modal({
-      title: `Connect ${def.name}`,
-      subtitle: `Gives employees access to: ${def.systems.map((s) => SYSTEMS[s].name).join(', ')}. Tokens are stored in your browser's credential vault (${app.vault.mode}), never in source code.`,
-      body: `<div class="form-grid">
-        ${def.fields.map((f) => `<label class="field"><span>${esc(f.label)}</span>${f.multiline ? `<textarea class="textarea" rows="3" data-f="${f.key}" placeholder="${esc(f.placeholder || '')}">${esc(cfg[f.key] || '')}</textarea>` : `<input class="input" data-f="${f.key}" ${f.secret ? 'type="password" autocomplete="off"' : ''} placeholder="${esc(f.secret && secrets[f.key] ? '•••••••• saved — leave blank to keep' : f.placeholder || '')}" value="${f.secret ? '' : esc(cfg[f.key] || '')}">`}${f.help ? `<span class="help">${esc(f.help)}</span>` : ''}</label>`).join('')}
-        ${id === 'google' ? `<div class="callout">${icon('info')}<div class="small">Authorized JavaScript origin to add in Google Cloud Console: <code>${esc(location.origin)}</code>. Enable the Gmail, Calendar, Drive and Sheets APIs. Google browser tokens last about one hour; reconnect when they expire.</div></div>` : ''}
-        ${relayNote}
-      </div>`,
-      actions: [
-        ...(existing ? [{ label: 'Disconnect', danger: true, onClick: async () => { await disconnect(app, id); } }] : []),
-        { label: 'Cancel' },
-        { label: id === 'google' ? 'Sign in with Google' : 'Save & test', primary: true, icon: 'plug-zap', onClick: async (m) => {
-          const config = { ...cfg };
-          const sec = { ...secrets };
-          for (const f of def.fields) {
-            const v = m.querySelector(`[data-f="${f.key}"]`).value.trim();
-            if (f.secret) { if (v) sec[f.key] = v; } else config[f.key] = v;
-          }
-          const missing = def.fields.filter((f) => !f.multiline && !(f.secret ? sec[f.key] : config[f.key]) && !/header/i.test(f.key));
-          if (missing.length) throw new Error(`Missing: ${missing.map((f) => f.label).join(', ')}`);
-          if (id === 'google') {
-            const tok = await requestGoogleToken(config.clientId);
-            Object.assign(sec, tok);
-            await app.vault.set(`conn.${id}`, sec);
-            await app.db.put('connections', { id, status: 'connected', config, account: tok.email, connectedAt: now(), lastTest: { ok: true, at: now(), message: 'OAuth token granted' } });
-            toast(`Google Workspace connected${tok.email ? ` (${tok.email})` : ''}`, 'success');
-            return;
-          }
-          await app.vault.set(`conn.${id}`, sec);
-          await app.db.put('connections', { id, status: 'pending', config, connectedAt: existing?.connectedAt || now() });
-          const r = await testConnectionRecord(app, id);
-          if (r.ok) toast(`${def.name} connected · ${r.account}`, 'success');
-          else { toast(`${def.name}: ${r.error}`, 'error'); return false; }
-        } },
-      ],
-    });
+/** Asks the extension for site access to a system. Returns 'granted' | 'pending' | 'no-extension'. */
+export async function grantSiteAccess(app, systemId) {
+  if (!bridge.paired) return 'no-extension';
+  const rows = await app.getConnections();
+  const origins = systemOrigins(systemId, rows);
+  if (!origins.length) return 'granted';
+  const r = await bridge.grantHosts(origins);
+  return r?.granted ? 'granted' : 'pending';
+}
+
+function accessToast(name, result, verb = 'connected') {
+  if (result === 'granted') toast(`${name} ${verb} · site access granted`, 'success');
+  else if (result === 'pending') toast(`${name} ${verb} — approve site access in the extension window`, 'info', 7000);
+  else toast(`${name} ${verb}. Install and connect the browser extension so employees can work in it.`, 'info', 7000);
+}
+
+function extensionNote(name, hosts) {
+  const list = hosts.length ? hosts.map((h) => `<code>${esc(h)}</code>`).join(', ') : '';
+  if (bridge.paired) return `<div class="callout success">${icon('puzzle')}<div class="small">Extension connected. After you continue, your browser asks to allow WorkForge on ${list || 'this site'}.</div></div>`;
+  if (bridge.available) return `<div class="callout warn">${icon('puzzle')}<div class="small">The extension is installed but not connected to this workspace. <a href="#/extension">Connect it</a>, then grant site access to ${esc(name)} from this page.</div></div>`;
+  return `<div class="callout warn">${icon('puzzle')}<div class="small">Employees need the WorkForge browser extension to work in ${esc(name)}. You can add it now and <a href="#/extension">install the extension</a> afterwards.</div></div>`;
+}
+
+/** Connect (or edit) a system. Asks only for the address when the system needs one. */
+export async function openConnectDialog(app, systemId) {
+  const rows = await app.getConnections();
+  const existing = rows.find((r) => r.id === systemId) || null;
+  const sys = allSystems(rows)[systemId];
+  if (!sys) return toast('Unknown system', 'error');
+  const custom = !!sys.custom;
+  const origins = systemOrigins(systemId, rows);
+  modal({
+    title: existing ? sys.name : `Connect ${sys.name}`,
+    subtitle: esc(sys.description || ''),
+    body: `<div class="form-grid">
+      <div class="row-top">${sysIcon(systemId, false, sys.name)}<p class="small muted">Your employee works in ${esc(sys.name)} in a browser tab, signed in with <strong>your own login</strong> — the way you would. WorkForge never asks for your password, and nothing is stored besides ${sys.address || custom ? 'the address below' : 'the fact that it is connected'}. Clicking and typing start as approval-required.</p></div>
+      ${custom ? `<label class="field"><span>Name</span><input class="input" data-f="name" value="${esc(existing?.name || sys.name)}" maxlength="60"></label>
+        <label class="field"><span>Address</span><input class="input" data-f="url" value="${esc(existing?.url || '')}" placeholder="https://app.example.com" inputmode="url"></label>` : ''}
+      ${sys.address ? `<label class="field"><span>${esc(sys.address.label)}</span><input class="input" data-f="url" value="${esc(existing?.url || '')}" placeholder="${esc(sys.address.placeholder || 'https://')}" inputmode="url" autocomplete="url"><span class="help">The address you open ${esc(sys.name)} at, so employees go to your account.</span></label>` : ''}
+      ${!sys.address && !custom ? `<p class="help">Employees open ${esc(sys.name)} at <code>${esc(systemUrl(systemId, rows))}</code>. Sign in there in this browser before they start.</p>` : ''}
+      ${extensionNote(sys.name, sys.address && !existing ? [] : hostsOf(origins))}
+    </div>`,
+    actions: [
+      ...(existing ? [{ label: 'Remove', danger: true, onClick: async () => removeSystem(app, systemId) }] : []),
+      { label: 'Cancel' },
+      { label: existing ? 'Save' : 'Connect', primary: true, icon: 'plug', onClick: async (m) => {
+        const row = { ...(existing || {}), id: systemId, addedAt: existing?.addedAt || now() };
+        if (custom) {
+          const name = m.querySelector('[data-f="name"]').value.trim();
+          if (!name) throw new Error('Give the web app a name');
+          const url = validateCustomUrl(m.querySelector('[data-f="url"]').value, rows, systemId);
+          Object.assign(row, { custom: true, name, url });
+        } else if (sys.address) {
+          row.url = validateSystemAddress(systemId, m.querySelector('[data-f="url"]').value);
+        }
+        await app.db.put('connections', row);
+        let result = 'no-extension';
+        try { result = await grantSiteAccess(app, systemId); } catch (e) { toast(`Site access: ${e.message}`, 'error'); }
+        accessToast(row.name || sys.name, result, existing ? 'saved' : 'connected');
+      } },
+    ],
   });
 }
 
-async function disconnect(app, id) {
-  await app.vault.remove(`conn.${id}`);
-  await app.db.delete('connections', id);
-  toast(`${CONNECTIONS[id].name} disconnected`);
+function slugify(s) {
+  return String(s).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'app';
 }
 
+function validateCustomUrl(value, rows, selfId = '') {
+  let raw = String(value || '').trim();
+  if (!raw) throw new Error('Enter the web app address');
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  let u;
+  try { u = new URL(raw); } catch { throw new Error('That is not a valid web address'); }
+  if (u.protocol !== 'https:') throw new Error('The address must start with https://');
+  if (!u.hostname.includes('.')) throw new Error('Enter the full address, e.g. https://app.example.com');
+  if (u.origin === location.origin) throw new Error('That is the WorkForge app itself');
+  const owner = systemForUrl(u.href, rows.filter((r) => r.id !== selfId));
+  if (owner) {
+    const name = allSystems(rows)[owner]?.name || owner;
+    throw new Error(SYSTEMS[owner] ? `That address belongs to ${name} — connect ${name} from the catalog instead.` : `That address is already added as ${name}.`);
+  }
+  u.hash = '';
+  return u.href;
+}
+
+function openCustomDialog(app) {
+  modal({
+    title: 'Add a custom web app',
+    subtitle: 'Any web app you use in this browser — an admin panel, a portal, an internal tool.',
+    body: `<div class="form-grid">
+      <label class="field"><span>Name</span><input class="input" id="c-name" maxlength="60" placeholder="e.g. Partner portal"></label>
+      <label class="field"><span>Address</span><input class="input" id="c-url" placeholder="https://portal.example.com" inputmode="url"><span class="help">Employees open this address and work there with your own login. Only this site (host) is granted.</span></label>
+      ${extensionNote('this web app', [])}
+    </div>`,
+    actions: [
+      { label: 'Cancel' },
+      { label: 'Add web app', primary: true, icon: 'plus', onClick: async (m) => {
+        const rows = await app.getConnections();
+        const name = m.querySelector('#c-name').value.trim();
+        if (!name) throw new Error('Give the web app a name');
+        const url = validateCustomUrl(m.querySelector('#c-url').value, rows);
+        const base = `custom_${slugify(name)}`;
+        const taken = new Set([...rows.map((r) => r.id), ...Object.keys(SYSTEMS)]);
+        let id = base;
+        for (let i = 2; taken.has(id); i++) id = `${base}_${i}`;
+        await app.db.put('connections', { id, custom: true, name, url, addedAt: now() });
+        let result = 'no-extension';
+        try { result = await grantSiteAccess(app, id); } catch (e) { toast(`Site access: ${e.message}`, 'error'); }
+        accessToast(name, result, 'added');
+      } },
+    ],
+  });
+}
+
+async function removeSystem(app, id) {
+  const [rows, employees] = await Promise.all([app.getConnections(), app.db.all('employees')]);
+  const name = allSystems(rows)[id]?.name || id;
+  const users = employees.filter((e) => (e.systems || []).includes(id) || e.permissions?.[id]).map((e) => e.name);
+  const msg = `Remove ${name}?${users.length ? ` ${users.join(', ')} ${users.length === 1 ? 'uses' : 'use'} it and will not be able to work there until you connect it again.` : ''} Site access the extension already has stays until you remove it in chrome://extensions.`;
+  if (!(await confirmDialog(msg, { danger: true, confirm: 'Remove' }))) return false;
+  await app.db.delete('connections', id);
+  toast(`${name} removed`);
+  return true;
+}
+
+// ------------------------------------------------------------ page
 export default async function systemsPage(ctx) {
   const { el, app } = ctx;
-  const isCatalog = location.hash.startsWith('#/integrations');
+  const wantsCatalog = location.hash.startsWith('#/integrations');
   el.innerHTML = '<div class="page" id="sp"></div>';
   const page = el.querySelector('#sp');
+  let filter = '';
+  let first = true;
+
   const render = async () => {
     if (!ctx.isCurrent()) return;
-    const [conns, employees] = await Promise.all([app.connectionMap(), app.db.all('employees')]);
-    const usedBy = (connId) => employees.filter((e) => CONNECTIONS[connId].systems.some((s) => e.permissions?.[s]));
-    if (isCatalog) {
-      const groups = {};
-      for (const [id, c] of Object.entries(CONNECTIONS)) {
-        const g = SYSTEMS[c.systems[0]].group;
-        (groups[g] = groups[g] || []).push([id, c]);
-      }
-      page.innerHTML = `<div class="page-head"><div><h1>Integrations</h1><p>Connect the systems your employees work in. Each connection uses your own credentials and real APIs.</p></div><a class="btn" href="#/systems">${icon('server')} Connected systems</a></div>
-        ${Object.entries(groups).map(([g, list]) => `<h3 class="mb-8 mt-16">${esc(g)}</h3><div class="grid-3">${list.map(([id, c]) => `<div class="int-card"><div class="between"><div class="row">${sysIcon(id)}<div class="strong">${esc(c.name)}</div></div>${conns[id] ? statusBadge(conns[id].status === 'connected' ? 'connected' : 'error', conns[id].status === 'connected' ? 'Connected' : 'Needs attention') : ''}</div>
-          <p class="small muted">${esc(c.systems.map((s) => SYSTEMS[s].description).join(' '))}</p>
-          <div class="between"><span class="tiny muted">${c.transport === 'relay' ? `${icon('puzzle')} via extension relay` : c.transport === 'direct' ? 'Direct from browser' : 'Direct or via extension'}</span><button class="btn btn-sm ${conns[id] ? '' : 'btn-primary'}" data-connect="${id}">${conns[id] ? 'Manage' : 'Connect'}</button></div></div>`).join('')}</div>`).join('')}
-        <h3 class="mb-8 mt-24">Built in</h3><div class="grid-3">${['files', 'browser', 'web'].map((s) => `<div class="int-card"><div class="row">${sysIcon(s)}<div class="strong">${esc(SYSTEMS[s].name)}</div></div><p class="small muted">${esc(SYSTEMS[s].description)}</p><a class="btn btn-sm" href="${s === 'files' ? '#/files' : '#/extension'}">${s === 'files' ? 'Manage files' : 'Set up extension'}</a></div>`).join('')}</div>`;
-    } else {
-      const rows = Object.values(conns);
-      page.innerHTML = `<div class="page-head"><div><h1>Systems</h1><p>Live status of every connected system, which employees use it, and the last connectivity test.</p></div><a class="btn btn-primary" href="#/integrations">${icon('plus')} Add integration</a></div>
-        <div class="stats mb-16">
-          <div class="stat"><div class="stat-top">Connected</div><div class="stat-value">${rows.filter((r) => r.status === 'connected').length}</div></div>
-          <div class="stat"><div class="stat-top">Needs attention</div><div class="stat-value">${rows.filter((r) => r.status !== 'connected').length}</div></div>
-          <div class="stat"><div class="stat-top">Extension relay</div><div class="stat-value" style="font-size:16px">${bridge.paired ? 'Connected' : bridge.available ? 'Not paired' : 'Not installed'}</div></div>
-          <div class="stat"><div class="stat-top">AI engine</div><div class="stat-value" style="font-size:16px">${(await app.aiReady()) ? 'Ready' : 'Not configured'}</div></div>
-        </div>
-        ${rows.length ? `<div class="card"><div class="table-wrap"><table class="log-table"><thead><tr><th>System</th><th>Account</th><th>Used by</th><th>Last test</th><th>Status</th><th></th></tr></thead><tbody>
-          ${rows.map((r) => `<tr><td><div class="row">${sysIcon(r.id)}<div><div class="strong small">${esc(CONNECTIONS[r.id]?.name || r.id)}</div><div class="tiny muted">${esc(CONNECTIONS[r.id]?.systems.map((s) => SYSTEMS[s].name).join(', ') || '')}</div></div></div></td>
-            <td class="small">${esc(r.account || '—')}${r.id === 'google' && app.vault.get('conn.google')?.expiresAt ? `<div class="tiny muted">token ${app.vault.get('conn.google').expiresAt > Date.now() ? `expires ${timeAgo(app.vault.get('conn.google').expiresAt)}` : 'expired'}</div>` : ''}</td>
-            <td class="small">${usedBy(r.id).map((e) => esc(e.name)).join(', ') || '—'}</td>
-            <td class="small ${r.lastTest?.ok ? 'muted' : 's-err'}">${r.lastTest ? `${timeAgo(r.lastTest.at)}${r.lastTest.ok ? '' : ` — ${esc(r.lastTest.message)}`}` : '—'}</td>
-            <td>${statusBadge(r.status === 'connected' ? 'connected' : 'error', r.status === 'connected' ? 'Connected' : 'Error')}</td>
-            <td><div class="row gap-6"><button class="btn btn-xs" data-test="${r.id}">${icon('activity')} Test</button><button class="btn btn-xs" data-connect="${r.id}">${r.id === 'google' ? 'Reconnect' : 'Edit'}</button><button class="btn btn-xs btn-ghost" data-disc="${r.id}">${icon('unplug')}</button></div></td></tr>`).join('')}
-        </tbody></table></div></div>` : `<div class="card">${emptyState('server', 'No systems connected', 'Connect Gmail, Slack, your CRM and more so employees can do real work.', '<a class="btn btn-primary" href="#/integrations">Browse integrations</a>')}</div>`}`;
+    await bridge.detect();
+    const [rows, employees, aiReady] = await Promise.all([app.getConnections(), app.db.all('employees'), app.aiReady()]);
+    const all = allSystems(rows);
+    const connected = rows.filter((r) => all[r.id]).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
+    const usedBy = (id) => employees.filter((e) => (e.systems || []).includes(id) || e.permissions?.[id]);
+    const originsById = Object.fromEntries(connected.map((r) => [r.id, systemOrigins(r.id, rows)]));
+
+    // Live site-access status from the extension.
+    let granted = null;
+    if (bridge.paired) {
+      const list = [...new Set(Object.values(originsById).flat())];
+      try { granted = list.length ? (await bridge.checkHosts(list)).granted || {} : {}; } catch { granted = null; }
     }
+    const access = (id) => {
+      if (!bridge.paired || !granted) return 'unknown';
+      const o = originsById[id] || [];
+      return o.length && o.every((x) => granted[x]) ? 'granted' : 'missing';
+    };
+    const grantedCount = connected.filter((r) => access(r.id) === 'granted').length;
+    const extLabel = bridge.paired ? 'Connected' : bridge.available ? 'Not connected' : 'Not installed';
+    const accessCell = (id) => {
+      const a = access(id);
+      if (a === 'granted') return statusBadge('connected', 'Site access granted');
+      if (a === 'missing') return `<div class="row gap-6 wrap">${statusBadge('pending', 'Needs site access')}<button class="btn btn-xs btn-primary" data-grant="${esc(id)}">${icon('shield-check')} Grant site access</button></div>`;
+      if (bridge.paired) return '<span class="small muted">Could not check</span>';
+      return `<a class="small" href="#/extension">${bridge.available ? 'Connect the extension' : 'Install the extension'}</a>`;
+    };
+    const address = (r) => {
+      const url = systemUrl(r.id, rows);
+      if (!url) return '<span class="small s-err">Address missing</span>';
+      return `<span class="small mono ellipsis" title="${esc(url)}" style="display:block;max-width:260px">${esc(url.replace(/^https:\/\//, '').replace(/\/$/, ''))}</span>`;
+    };
+
+    const groups = [...SYSTEM_GROUPS];
+    const q = filter.toLowerCase();
+    const catalogCard = (id, s) => {
+      const conn = rows.some((r) => r.id === id);
+      const hay = `${s.name} ${s.group} ${s.description}`.toLowerCase();
+      return `<div class="int-card" data-card="${esc(id)}" data-hay="${esc(hay)}" ${q && !hay.includes(q) ? 'hidden' : ''}>
+        <div class="between"><div class="row">${sysIcon(id, false, s.name)}<div><div class="strong">${esc(s.name)}</div>${s.address ? '<div class="tiny muted">Uses your own address</div>' : `<div class="tiny muted">${esc(hostOf(s.url))}</div>`}</div></div>${conn ? statusBadge('connected', 'Connected') : ''}</div>
+        <p class="small muted">${esc(s.description)}</p>
+        <div class="row" style="justify-content:flex-end"><button class="btn btn-sm ${conn ? '' : 'btn-primary'}" data-connect="${esc(id)}">${conn ? 'Manage' : `${icon('plus')} Connect`}</button></div>
+      </div>`;
+    };
+
+    page.innerHTML = `<div class="page-head"><div><h1>Systems</h1><p>The web apps your employees work in. They work in browser tabs with your own signed-in session through the WorkForge extension — no passwords, tokens or keys are stored.</p></div>
+      <div class="row"><button class="btn" id="add-custom">${icon('globe')} Add custom web app</button><a class="btn btn-primary" href="#/systems" id="to-catalog">${icon('plus')} Connect a system</a></div></div>
+      <div class="stats mb-16">
+        <div class="stat"><div class="stat-top">Connected systems</div><div class="stat-value">${connected.length}</div></div>
+        <div class="stat"><div class="stat-top">Site access granted</div><div class="stat-value">${bridge.paired && granted ? `${grantedCount}/${connected.length}` : '—'}</div></div>
+        <div class="stat"><div class="stat-top">Browser extension</div><div class="stat-value" style="font-size:16px">${extLabel}</div><div class="stat-sub small muted">${bridge.paired ? `v${esc(bridge.version || '')}` : '<a href="#/extension">Set it up</a>'}</div></div>
+        <div class="stat"><div class="stat-top">AI engine</div><div class="stat-value" style="font-size:16px">${aiReady ? 'Ready' : 'Not configured'}</div></div>
+      </div>
+      ${!bridge.paired && connected.length ? `<div class="callout warn mb-16">${icon('puzzle')}<div class="small">Employees work in these systems through the WorkForge browser extension. ${bridge.available ? 'It is installed — <a href="#/extension">connect it to this workspace</a>.' : '<a href="#/extension">Install the extension</a> to let them start.'}</div></div>` : ''}
+
+      <div class="section-title between mb-8"><h3>Connected</h3><span class="small muted">${connected.length ? 'Sign in to each system in this browser so employees can use your session.' : ''}</span></div>
+      ${connected.length ? `<div class="card mb-16"><div class="table-wrap"><table class="log-table"><thead><tr><th>System</th><th>Address</th><th>Used by</th><th>Site access</th><th></th></tr></thead><tbody>
+        ${connected.map((r) => {
+    const s = all[r.id];
+    const users = usedBy(r.id);
+    const url = systemUrl(r.id, rows);
+    return `<tr><td><div class="row">${sysIcon(r.id, false, s.name)}<div><div class="strong small">${esc(s.name)}</div><div class="tiny muted">${esc(s.custom ? 'Custom web app' : s.group)}</div></div></div></td>
+          <td>${address(r)}</td>
+          <td class="small">${users.length ? users.map((e) => `<a href="#/employees/${esc(e.id)}">${esc(e.name)}</a>`).join(', ') : '<span class="muted">—</span>'}</td>
+          <td>${accessCell(r.id)}</td>
+          <td><div class="row gap-6" style="justify-content:flex-end">${url ? `<a class="btn btn-xs" href="${esc(url)}" target="_blank" rel="noopener">${icon('external-link')} Open</a>` : ''}<button class="btn btn-xs" data-connect="${esc(r.id)}">${icon('pencil')} Edit</button><button class="btn btn-xs btn-ghost" data-remove="${esc(r.id)}" title="Remove">${icon('trash-2')} Remove</button></div></td></tr>`;
+  }).join('')}
+      </tbody></table></div></div>` : `<div class="card mb-16">${emptyState('app-window', 'No systems connected yet', 'Pick the web apps your business runs on from the catalog below. Employees will work in them in browser tabs, signed in as you.')}</div>`}
+
+      <div class="between mt-24 mb-8" id="catalog"><h3>Catalog</h3><div class="input-icon" style="max-width:260px">${icon('search')}<input class="input" id="cat-search" placeholder="Search systems" value="${esc(filter)}"></div></div>
+      ${groups.map((g) => {
+    const list = Object.entries(SYSTEMS).filter(([, s]) => s.group === g);
+    if (!list.length) return '';
+    return `<div data-group><h4 class="small muted mb-8 mt-16" style="text-transform:uppercase;letter-spacing:.06em">${esc(g)}</h4><div class="grid-3">${list.map(([id, s]) => catalogCard(id, s)).join('')}</div></div>`;
+  }).join('')}
+      <div data-group><h4 class="small muted mb-8 mt-16" style="text-transform:uppercase;letter-spacing:.06em">Your own</h4><div class="grid-3">
+        ${rows.filter((r) => r.custom && all[r.id]).map((r) => catalogCard(r.id, all[r.id])).join('')}
+        <div class="int-card" data-card="custom" data-hay="custom web app other website portal admin"><div class="row">${sysIcon('web')}<div class="strong">Custom web app</div></div><p class="small muted">Any other web app you sign in to — an admin panel, a supplier portal, an internal tool.</p><div class="row" style="justify-content:flex-end"><button class="btn btn-sm" data-add-custom>${icon('plus')} Add</button></div></div>
+        <div class="int-card" data-card="files" data-hay="knowledge files documents pdf"><div class="row">${sysIcon('files')}<div class="strong">Knowledge files</div></div><p class="small muted">Documents employees can search and read, stored only in this browser.</p><div class="row" style="justify-content:flex-end"><a class="btn btn-sm" href="#/files">Manage files</a></div></div>
+      </div></div>`;
+
     page.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
-    page.querySelectorAll('[data-test]').forEach((b) => b.onclick = async () => {
+    page.querySelectorAll('[data-remove]').forEach((b) => b.onclick = () => removeSystem(app, b.dataset.remove));
+    page.querySelectorAll('[data-grant]').forEach((b) => b.onclick = async () => {
       b.disabled = true;
-      const r = await testConnectionRecord(app, b.dataset.test);
-      toast(r.ok ? `Connection OK · ${r.account}` : r.error, r.ok ? 'success' : 'error');
+      try {
+        const r = await grantSiteAccess(app, b.dataset.grant);
+        if (r === 'granted') { toast('Site access granted', 'success'); render(); } else if (r === 'pending') toast('Approve site access in the extension window', 'info', 7000);
+        else toast('Connect the browser extension first', 'error');
+      } catch (e) { toast(e.message, 'error'); } finally { b.disabled = false; }
     });
-    page.querySelectorAll('[data-disc]').forEach((b) => b.onclick = async () => {
-      if (await confirmDialog(`Disconnect ${CONNECTIONS[b.dataset.disc].name}? Credentials are removed from the vault and employees lose access.`, { danger: true, confirm: 'Disconnect' })) await disconnect(app, b.dataset.disc);
+    page.querySelector('#add-custom').onclick = () => openCustomDialog(app);
+    page.querySelectorAll('[data-add-custom]').forEach((b) => b.onclick = () => openCustomDialog(app));
+    page.querySelector('#to-catalog').onclick = (e) => { e.preventDefault(); page.querySelector('#catalog').scrollIntoView({ behavior: 'smooth' }); page.querySelector('#cat-search').focus({ preventScroll: true }); };
+    const search = page.querySelector('#cat-search');
+    search.addEventListener('input', () => {
+      filter = search.value.trim();
+      const term = filter.toLowerCase();
+      page.querySelectorAll('[data-card]').forEach((c) => { c.hidden = !!term && !c.dataset.hay.includes(term); });
+      page.querySelectorAll('[data-group]').forEach((g) => { g.hidden = ![...g.querySelectorAll('[data-card]')].some((c) => !c.hidden); });
     });
+    if (filter) search.dispatchEvent(new Event('input'));
     refreshIcons();
+    if (first && wantsCatalog) page.querySelector('#catalog').scrollIntoView();
+    first = false;
   };
+
+  // Site access is granted in an extension window; re-check when the user comes back.
+  const onFocus = () => render();
+  window.addEventListener('focus', onFocus);
+  ctx.cleanup(() => window.removeEventListener('focus', onFocus));
+  const off = bridge.on(() => render());
+  ctx.cleanup(off);
   ctx.watch(['connections', 'employees'], render, 300);
   await render();
 }

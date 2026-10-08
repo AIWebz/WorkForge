@@ -1,8 +1,21 @@
-// In-browser document parsing. Parsers are vendored in assets/vendor and loaded
-// on demand; file contents never leave the browser (except when you explicitly
-// ask the AI engine to read an image).
+// In-browser document parsing for knowledge files. Parsers are vendored in
+// assets/vendor and loaded on demand; file contents never leave the browser
+// (except when you explicitly ask the AI engine to read an image).
 import { loadScript } from './ui.js';
-import { htmlToText } from '../extension/core/tools.js';
+
+// Readable text from an HTML document, parsed locally (scripts never run).
+export function htmlToText(html) {
+  const s = String(html || '');
+  if (!/<[a-z][\s\S]*>/i.test(s)) return s;
+  const doc = new DOMParser().parseFromString(s, 'text/html');
+  doc.querySelectorAll('script,style,noscript,svg,iframe,template').forEach((n) => n.remove());
+  doc.querySelectorAll('br').forEach((n) => n.replaceWith('\n'));
+  doc.querySelectorAll('p,div,section,article,header,footer,li,tr,h1,h2,h3,h4,h5,h6,pre,blockquote,table').forEach((n) => n.append('\n'));
+  doc.querySelectorAll('td,th').forEach((n) => n.append('\t'));
+  const title = doc.title ? `${doc.title.trim()}\n\n` : '';
+  return (title + (doc.body?.textContent || ''))
+    .replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \u00a0]{2,}/g, ' ').trim();
+}
 
 const CDN = {
   pdf: 'assets/vendor/pdf.min.js',

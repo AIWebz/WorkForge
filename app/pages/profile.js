@@ -1,13 +1,37 @@
 import { esc, icon, avatar, statusBadge, timeAgo, fmtDateTime, fmtHours, sysIcon, refreshIcons, toast, modal, confirmDialog, download, emptyState, md } from '../ui.js';
-import { SYSTEMS, TOOL_MAP, CONNECTIONS, SCOPE_LABELS, TOOLS } from '../../extension/core/catalog.js';
-import { evaluatePermission, validateEmployee, scheduleNext, normalizeTriggers } from '../../extension/core/employee.js';
+import { SYSTEMS, SYSTEM_GROUPS, SYSTEM_SCOPES, SCOPE_LABELS, SENSITIVE_SCOPES, DEFAULT_SCOPE_LEVELS, TOOL_MAP, TOOLS, allSystems, systemUrl, systemForUrl, systemOrigins, hostOf } from '../../extension/core/catalog.js';
+import { validateEmployee, scheduleNext, normalizeTriggers } from '../../extension/core/employee.js';
 import { MEMORY_KINDS, addMemory, employeeMemory, retrieve } from '../../extension/core/memory.js';
 import { modifyEmployee, restoreVersion } from '../../extension/core/modifier.js';
 import { computeStats } from '../../extension/core/reports.js';
 import { clone, now, truncate } from '../../extension/core/util.js';
-import { renderWorkflow, openScriptEditor, persist } from './workflow.js';
+import { renderWorkflow, openScriptEditor, persist, employeeSystemIds, systemName, systemLogos } from './workflow.js';
 import { activityTable, bindActivityRows } from './activity.js';
+import { openConnectDialog } from './systems.js';
 import { bridge } from '../bridge.js';
+
+const LEVELS = ['allow', 'approval', 'deny'];
+const LEVEL_LABEL = { allow: 'Allow', approval: 'Needs approval', deny: 'No access' };
+const LEVEL_SHORT = { allow: 'Allow', approval: 'Approval', deny: 'No access' };
+
+/**
+ * The level a scope resolves to for one system, following the core policy:
+ * missing → deny; script approval or the workspace "approve all" setting lifts
+ * allowed click / type actions to approval.
+ */
+function scopeLevel(employee, sys, scope, { script, settings } = {}) {
+  let level = employee.permissions?.[sys]?.[scope] || 'deny';
+  if (level === 'allow' && SENSITIVE_SCOPES.has(scope) && (script?.approval?.required || settings?.approveAllOutbound)) level = 'approval';
+  return level;
+}
+
+/** Knowledge files are readable only with files.read and at least one granted collection. */
+function filesLevel(employee) {
+  return (employee.collections || []).length ? employee.permissions?.files?.read || 'deny' : 'deny';
+}
+
+const lvlTag = (level, label = LEVEL_SHORT[level]) => `<span class="small strong lvl-${level}">${esc(label)}</span>`;
+const domainsOf = (employee) => employee.browser?.domains || [];
 
 const TABS = [['overview', 'Overview'], ['chat', 'Chat'], ['scripts', 'Scripts'], ['workflows', 'Workflows'], ['memory', 'Memory'], ['tools', 'Tools'], ['files', 'Files'], ['systems', 'Systems'], ['permissions', 'Permissions'], ['activity', 'Activity'], ['performance', 'Performance']];
 
@@ -26,11 +50,13 @@ export default async function profile(ctx) {
   const reload = async () => { employee = await app.db.get('employees', params.id); return employee; };
 
   const renderHead = async () => {
-    const tasks = await app.db.byIndex('tasks', 'employeeId', employee.id);
+    const [tasks, conns] = await Promise.all([app.db.byIndex('tasks', 'employeeId', employee.id), app.getConnections()]);
+    const sysIds = employeeSystemIds(employee, conns);
     const live = tasks.find((t) => ['running', 'waiting_approval', 'queued'].includes(t.status));
     head.innerHTML = `<div class="page-head">
       <div class="row gap-16">${avatar(employee, 'avatar-lg')}<div><div class="row"><h1>${esc(employee.name)}</h1>${statusBadge(employee.status === 'active' && live ? 'working' : employee.status)}</div>
-      <p class="muted">${esc(employee.role)} · v${employee.version} · ${employee.scripts.length} scripts · created ${timeAgo(employee.createdAt)}</p></div></div>
+      <p class="muted">${esc(employee.role)} · v${employee.version} · ${employee.scripts.length} scripts · created ${timeAgo(employee.createdAt)}</p>
+      ${sysIds.length ? `<a class="row gap-6 mt-8 small muted" href="#/employees/${employee.id}/systems" style="text-decoration:none">${systemLogos(sysIds, conns, 8)}<span>Works in ${esc(sysIds.map((id) => systemName(id, conns)).join(', '))}</span></a>` : ''}</div></div>
       <div class="row wrap">
         ${employee.status === 'draft' ? `<button class="btn" id="deploy">${icon('rocket')} Deploy</button>` : employee.status === 'paused' ? `<button class="btn" id="resume">${icon('play')} Resume</button>` : `<button class="btn" id="pause">${icon('pause')} Pause</button>`}
         <button class="btn btn-icon" id="export" title="Export employee JSON">${icon('download')}</button>
@@ -67,42 +93,72 @@ export default async function profile(ctx) {
   await renderTab();
   ctx.watch(['employees'], async () => { if (!(await reload())) return navigate('/employees'); renderHead(); if (!['chat'].includes(tab)) renderTab(); });
   ctx.watch(['tasks'], () => renderHead(), 600);
+  ctx.watch(['connections'], () => { renderHead(); if (['systems', 'permissions', 'tools', 'scripts', 'workflows', 'overview'].includes(tab)) renderTab(); }, 400);
   if (['overview', 'activity', 'performance', 'workflows'].includes(tab)) ctx.watch(['tasks', 'activity', 'versions', 'approvals'], () => renderTab(), 700);
 }
 
 // ------------------------------------------------------------ Run task
 export async function runTaskDialog(app, employee, { input = '' } = {}) {
   if (!(await app.aiReady())) return toast('Configure the AI engine first (Settings → AI Engine).', 'error');
+  const conns = await app.getConnections();
+  const mine = employeeSystemIds(employee, conns);
+  const names = mine.map((id) => systemName(id, conns));
   let tabs = [];
-  if (employee.browser?.enabled && bridge.paired) { try { tabs = await bridge.tabs(); } catch { tabs = []; } }
+  if (bridge.paired) { try { tabs = (await bridge.tabs() || []).filter((t) => /^https?:\/\//i.test(t.url || '')); } catch { tabs = []; } }
+  const tabSystem = (t) => systemForUrl(t.url, conns);
+  // Tabs inside this employee's systems first, then the active tab.
+  tabs.sort((a, b) => (mine.includes(tabSystem(b)) ? 1 : 0) - (mine.includes(tabSystem(a)) ? 1 : 0) || (b.active ? 1 : 0) - (a.active ? 1 : 0));
+  const tabLabel = (t) => { const sid = tabSystem(t); return `${truncate(t.title || t.url, 60)} — ${sid ? systemName(sid, conns) : hostOf(t.url)}`; };
   const entries = [
     ...employee.triggers.map((t) => ({ value: `trg:${t.id}`, label: `Trigger · ${t.label}`, entry: t.entryScript, input: t.input })),
     ...employee.scripts.map((s) => ({ value: `scr:${s.id}`, label: `Start at · ${s.name}`, entry: s.id })),
   ];
+  const defaultHelp = mine.length
+    ? `No tab needed: ${esc(employee.name)} opens ${esc(names.join(', '))} in a new working tab with browser_open. Pick a tab to start where you already are, e.g. an open email or record.`
+    : `${esc(employee.name)} has no systems yet, so a tab is only useful for reading websites listed under Permissions → Other websites.`;
+  const tabHelp = (t) => {
+    if (!t) return defaultHelp;
+    const sid = tabSystem(t);
+    if (sid && mine.includes(sid)) return `${sysIcon(sid, true, systemName(sid, conns))} In ${esc(systemName(sid, conns))}: ${SYSTEM_SCOPES.map((sc) => `${SCOPE_LABELS[sc]} ${lvlTag(scopeLevel(employee, sid, sc, { settings: app.settings }))}`).join(' · ')}`;
+    if (domainsOf(employee).includes(hostOf(t.url))) return `${icon('globe')} Other website: ${esc(employee.name)} may read and navigate here, but not click or type.`;
+    return `<span class="s-wait">${icon('alert-triangle')} ${esc(sid ? systemName(sid, conns) : hostOf(t.url))} is not one of ${esc(employee.name)}'s systems. It will be blocked in this tab until you add it under Permissions.</span>`;
+  };
   modal({
     title: `Run ${employee.name}`,
-    subtitle: 'Creates a real task executed by the AI engine. Approval-gated actions will wait in the Approval Center.',
+    subtitle: 'Creates a real task executed by the AI engine. Clicks and typing that need approval wait in the Approval Center.',
     body: `<div class="form-grid">
       <label class="field"><span>Instruction</span><textarea class="textarea" id="rt-input" rows="5" placeholder="e.g. Process the new lead: Jane Doe, jane@acme.io, VP Sales at Acme (acme.io)">${esc(input)}</textarea></label>
       <label class="field"><span>Entry point</span><select class="select" id="rt-entry">${entries.map((e) => `<option value="${e.value}" ${e.entry === employee.entryScript && e.value.startsWith('scr') ? 'selected' : ''}>${esc(e.label)}</option>`).join('')}</select></label>
-      ${employee.browser?.enabled ? `<label class="field"><span>Browser tab</span>${bridge.paired ? `<select class="select" id="rt-tab"><option value="">No browser tab</option>${tabs.map((t) => `<option value="${t.id}">${esc(t.title || t.url).slice(0, 80)} — ${esc(new URL(t.url).host)}</option>`).join('')}</select><span class="help">The employee can read and act in this tab within its browser permissions.</span>` : '<span class="help">Install and connect the WorkForge extension to let this employee work in a browser tab.</span>'}</label>` : ''}
+      ${bridge.paired ? `<label class="field"><span>Working tab <span class="muted">(optional)</span></span><select class="select" id="rt-tab"><option value="">Let the employee open its systems itself</option>${tabs.map((t) => `<option value="${t.id}">${esc(tabLabel(t))}</option>`).join('')}</select><span class="help row wrap gap-4" id="rt-tab-help">${defaultHelp}</span></label>`
+    : mine.length ? `<div class="callout warn">${icon('puzzle')}<div class="small">${esc(employee.name)} works in ${esc(names.join(', '))} through the WorkForge browser extension, using your own signed-in browser. <a href="#/extension">Install and pair the extension</a> first — without it, every step in those systems fails.</div></div>` : ''}
       ${employee.status === 'draft' ? `<div class="callout warn">${icon('flask-conical')}<div class="small">${esc(employee.name)} is a draft — this run is a real test run with real tools and approvals.</div></div>` : ''}
     </div>`,
+    onMount(m) {
+      const sel = m.querySelector('#rt-tab');
+      if (!sel) return;
+      sel.onchange = () => { m.querySelector('#rt-tab-help').innerHTML = tabHelp(tabs.find((x) => x.id === Number(sel.value))); refreshIcons(); };
+    },
     actions: [
       { label: 'Cancel' },
       { label: 'Run task', primary: true, icon: 'play', onClick: async (m) => {
+        if (employee.status === 'paused') throw new Error(`${employee.name} is paused. Resume it first.`);
         const text = m.querySelector('#rt-input').value.trim();
         const sel = entries.find((e) => e.value === m.querySelector('#rt-entry').value);
         const tabId = Number(m.querySelector('#rt-tab')?.value || 0);
         let browser = null;
         if (tabId) {
           const t = tabs.find((x) => x.id === tabId);
+          if (!t) throw new Error('That tab is no longer available. Pick another tab or let the employee open its systems itself.');
           const origin = new URL(t.url).origin;
+          const host = new URL(origin).host;
           const g = await bridge.grantHosts([`${origin}/*`]);
-          if (!g.granted) throw new Error(`Approve access to ${new URL(origin).host} in the WorkForge extension window, then click Run task again.`);
+          if (!g?.granted) {
+            throw new Error(g?.pending
+              ? `Approve access to ${host} in the WorkForge extension window that just opened, then click Run task again.`
+              : `The WorkForge extension does not have access to ${host}, so the employee cannot work in that tab.`);
+          }
           browser = { tabId, url: t.url, title: t.title, origin };
         }
-        if (employee.status === 'paused') throw new Error(`${employee.name} is paused. Resume it first.`);
         const task = await app.runtime.createTask(employee, { input: text || sel?.input || '', title: text ? undefined : sel?.label, trigger: 'manual', entryScript: sel?.entry, browser });
         toast(`Task started: ${task.title}`, 'success');
       } },

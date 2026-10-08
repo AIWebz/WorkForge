@@ -1,6 +1,8 @@
 // Page-side bridge to the WorkForge browser extension. The extension's content
 // script (extension/bridge.js) relays these messages to its background worker,
-// which only serves origins the user explicitly paired.
+// which only serves origins the user explicitly paired. Employees work inside
+// systems (web apps) in browser tabs the extension opens with the owner's own
+// signed-in session; site access is granted per system.
 import { Emitter, uid } from '../extension/core/util.js';
 
 class Bridge extends Emitter {
@@ -22,7 +24,9 @@ class Bridge extends Emitter {
       if (e.data.ok) p.resolve(e.data.data);
       else {
         if (e.data.code === 'not_paired' && this.paired) { this.paired = false; this.emit({ type: 'status' }); }
-        p.reject(new Error(e.data.error || 'Extension request failed'));
+        const err = new Error(e.data.error || 'Extension request failed');
+        if (e.data.code) err.code = e.data.code;
+        p.reject(err);
       }
     });
   }
@@ -79,13 +83,16 @@ class Bridge extends Emitter {
   sync(snapshot) { return this.request('sync', snapshot, 30000); }
   pull(since) { return this.request('pull', { since }, 20000); }
   tabs() { return this.request('tabs', {}, 8000); }
+  // Asks the extension for site access ("https://host/*" origins). Resolves
+  // { granted: true } or { granted: false, pending: true } while a grant window is open.
   grantHosts(origins) { return this.request('grantHosts', { origins }, 180000); }
 
-  async relayFetch(url, init = {}) {
-    const headers = {};
-    if (init.headers) for (const [k, v] of Object.entries(init.headers)) headers[k] = v;
-    return this.request('fetch', { url, method: init.method || 'GET', headers, body: typeof init.body === 'string' ? init.body : undefined }, 60000);
-  }
+  // → { granted: { [origin]: boolean } }
+  checkHosts(origins) { return this.request('checkHosts', { origins }, 8000); }
+
+  // Opens a working tab → { tabId, url, title }. Rejects with code 'no_host_permission'
+  // when the site has not been granted.
+  openTab(url, { active = false } = {}) { return this.request('openTab', { url, active }, 45000); }
 
   browserAction(tabId, action, args) {
     return this.request('browser', { tabId, action, args }, 60000);

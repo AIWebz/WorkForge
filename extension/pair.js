@@ -10,8 +10,8 @@ if (mode === 'pair') {
     <p class="origin">${esc(origin)}</p>
     <p>Only allow this if it is <strong>your</strong> WorkForge app. Once connected, it can:</p>
     <ul class="perm-list">
-      <li>Sync your employees, knowledge files, memory and connected systems into the extension</li>
-      <li>Share your AI engine key with the extension, only if you turned that on in the app's Settings (kept in session storage, cleared when the browser closes)</li>
+      <li>Sync your employees, knowledge files, memory, connected systems and approval settings into the extension</li>
+      <li>Receive your AI engine key, only if you turned on sharing it with the extension in the app's Settings (kept in session storage, cleared when the browser closes)</li>
       <li>See the titles and addresses of your open tabs when you pick one for a task</li>
       <li>Open your connected systems (Gmail, HubSpot…) in a new working tab, on sites you allowed</li>
       <li>Read pages, navigate, click and type in working tabs, only on sites you allowed and within each employee's permissions</li>

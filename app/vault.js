@@ -1,4 +1,6 @@
-// Credential vault. Secrets (AI keys, API tokens) never live in source code or
+// AI key vault. The only secret WorkForge keeps is your AI provider key
+// (`ai.apiKey`) — employees work in your systems with your own browser login, so
+// there are no system tokens to store. The key never lives in source code or in
 // IndexedDB in plain text. Three storage modes:
 //  - session:   sessionStorage, cleared when the tab closes (default)
 //  - encrypted: AES-GCM ciphertext in localStorage, key derived from a passphrase (PBKDF2)
@@ -7,6 +9,8 @@ const MODE_KEY = 'wf.vault.mode';
 const ENC_KEY = 'wf.vault.enc';
 const SESSION_KEY = 'wf.vault.session';
 const DEVICE_KEY = 'wf.vault.device';
+// Names the vault may hold. Anything else (e.g. tokens from older versions) is dropped.
+const ALLOWED = new Set(['ai.apiKey']);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -27,6 +31,16 @@ class Vault {
     this.listeners = new Set();
     if (this.mode === 'session') this.data = JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}');
     if (this.mode === 'device') this.data = JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}');
+    this.prune();
+  }
+
+  // Removes entries the vault no longer stores (legacy system tokens).
+  prune() {
+    if (!this.data) return;
+    const stale = Object.keys(this.data).filter((k) => !ALLOWED.has(k));
+    if (!stale.length) return;
+    for (const k of stale) delete this.data[k];
+    this.persist().catch(() => {});
   }
 
   onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
@@ -52,6 +66,7 @@ class Vault {
       this.data = JSON.parse(dec.decode(plain));
       this.key = key;
       this.salt = salt;
+      this.prune();
       this.notify();
     } catch {
       throw new Error('Incorrect passphrase');
@@ -80,8 +95,10 @@ class Vault {
   getAll() { return this.data ? { ...this.data } : null; }
 
   async set(name, value) {
-    if (this.locked) throw new Error('Unlock the credential vault first (Settings → Security)');
-    if (value === undefined || value === null || value === '') delete this.data[name];
+    if (this.locked) throw new Error('Unlock the AI key vault first (Settings → Security)');
+    const clearing = value === undefined || value === null || value === '';
+    if (!clearing && !ALLOWED.has(name)) throw new Error(`The vault only stores the AI key (not “${name}”)`);
+    if (clearing) delete this.data[name];
     else this.data[name] = value;
     await this.persist();
     this.notify();
@@ -89,7 +106,7 @@ class Vault {
 
   async remove(name) { return this.set(name, undefined); }
 
-  /** Switch storage mode, migrating current secrets. */
+  /** Switch storage mode, migrating the stored AI key. */
   async setMode(mode, passphrase) {
     if (this.locked) throw new Error('Unlock the vault before changing its mode');
     const current = { ...this.data };
