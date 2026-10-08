@@ -90,22 +90,37 @@ export async function chat(cfg, { system, messages, tools = [], maxTokens = 2048
   if (tools.length) body.response_format = { type: 'json_object', schema: JSON.stringify(toolCallSchema(tools)) };
   else if (json || schema) body.response_format = { type: 'json_object', schema: JSON.stringify(schema || ANY_OBJECT) };
 
+  // Requests queue on the single engine. A cancelled request is skipped while
+  // queued and interrupted while generating.
+  let generating = false;
+  const onAbort = () => { if (generating) { try { engine.interruptGenerate?.(); } catch { /* ignore */ } } };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const create = () => host.run(async () => {
+    if (signal?.aborted) throw new AIError('Request cancelled', { code: 'aborted' });
+    generating = true;
+    try { return await engine.chat.completions.create(body); } finally { generating = false; }
+  });
+  const failed = (e) => (e?.code === 'aborted' ? e : new AIError(`The AI engine failed: ${e?.message || e}`, { code: 'engine' }));
+
   let res;
   try {
-    res = await host.run(() => engine.chat.completions.create(body));
+    res = await create();
   } catch (e) {
     // If constrained decoding cannot start, answer unconstrained once; the
     // caller still parses and validates the JSON.
-    if (!body.response_format || !/grammar|schema|std::string/i.test(String(e?.message || e))) {
-      throw new AIError(`The AI engine failed: ${e.message || e}`, { code: 'engine' });
+    if (e?.code === 'aborted' || !body.response_format || !/grammar|schema|std::string/i.test(String(e?.message || e))) {
+      signal?.removeEventListener('abort', onAbort);
+      throw failed(e);
     }
     delete body.response_format;
     try {
-      res = await host.run(() => engine.chat.completions.create(body));
+      res = await create();
     } catch (e2) {
-      throw new AIError(`The AI engine failed: ${e2.message || e2}`, { code: 'engine' });
+      signal?.removeEventListener('abort', onAbort);
+      throw failed(e2);
     }
   }
+  signal?.removeEventListener('abort', onAbort);
   if (signal?.aborted) throw new AIError('Request cancelled', { code: 'aborted' });
   const choice = res.choices?.[0] || {};
   const text = choice.message?.content || '';
@@ -136,15 +151,20 @@ export function toolResultMessages(cfg, results) {
 
 // Ask for a JSON object (optionally matching a JSON schema).
 export async function chatJSON(cfg, { system, prompt, schema = null, maxTokens = 4096, signal }) {
-  const messages = [userMessage(cfg, prompt)];
-  const first = await chat(cfg, { system, messages, json: true, schema, maxTokens, signal });
+  const first = await chat(cfg, { system, messages: [userMessage(cfg, prompt)], json: true, schema, maxTokens, signal });
   try {
     return { data: extractJSON(first.text), usage: first.usage };
-  } catch {
-    messages.push(first.assistant, userMessage(cfg, 'That was not valid JSON. Reply again with only the complete JSON object.'));
-    const second = await chat(cfg, { system, messages, json: true, schema, maxTokens, signal });
-    return { data: extractJSON(second.text), usage: second.usage };
+  } catch { /* retry below */ }
+  // A reply cut off at the token limit can't be continued: ask again from scratch for a shorter answer.
+  const cut = first.stopReason === 'length';
+  const messages = cut
+    ? [userMessage(cfg, `${prompt}\n\nYour previous answer was too long and was cut off. Answer again much more briefly: fewer items, short strings, compact JSON.`)]
+    : [userMessage(cfg, prompt), first.assistant, userMessage(cfg, 'That was not valid JSON. Reply again with only the complete JSON object.')];
+  const second = await chat(cfg, { system, messages, json: true, schema, maxTokens, signal });
+  if (second.stopReason === 'length') {
+    throw new AIError('The answer was too long for the on-device AI engine. Describe a narrower job and try again.', { code: 'length' });
   }
+  return { data: extractJSON(second.text), usage: second.usage };
 }
 
 /** Load the model (downloading it on first use) and run a tiny prompt. */

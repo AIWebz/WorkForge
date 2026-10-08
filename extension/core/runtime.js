@@ -8,7 +8,9 @@ import { evaluatePermission, toolsForScript, usedSystems, connectionRows } from 
 import { memoryContext, addMemory } from './memory.js';
 import { Emitter, uid, now, truncate, safeStringify } from './util.js';
 
-export const LIMITS = { scriptsPerTask: 25, turnsPerScript: 14, concurrent: 3 };
+// One tool call per model turn, and one task at a time on the single on-device engine
+// (interleaving tasks would make the engine re-read every prompt from scratch).
+export const LIMITS = { scriptsPerTask: 25, turnsPerScript: 40, concurrent: 1 };
 export const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'needs_attention']);
 
 export class Runtime extends Emitter {
@@ -239,7 +241,7 @@ export class Runtime extends Emitter {
         system: await this.systemPrompt(employee, script),
         messages: task.current.messages,
         tools: this.toolDefs(employee, script),
-        maxTokens: 1200,
+        maxTokens: 2048,
         signal,
       });
       task.usage.input += resp.usage.input;
@@ -251,12 +253,19 @@ export class Runtime extends Emitter {
 
       if (!resp.toolCalls.length) {
         task.current.nudges++;
+        // With constrained decoding a finished reply is always a tool call, so this is usually a reply cut off at the token limit.
+        const cut = resp.stopReason === 'length';
+        if (cut) task.current.messages[task.current.messages.length - 1] = { role: 'assistant', content: '[reply cut off: too long]' };
         if (task.current.nudges > 2) {
-          await this.finishScript(task, employee, script, { status: 'success', summary: truncate(resp.text || 'Script ended without calling complete_script', 300), output: { text: resp.text }, next_script: 'END' });
+          await this.finishScript(task, employee, script, cut
+            ? { status: 'failed', summary: 'The AI engine reply was cut off (too long) three times.', output: {}, next_script: 'END' }
+            : { status: 'success', summary: truncate(resp.text || 'Script ended without calling complete_script', 300), output: { text: resp.text }, next_script: 'END' });
           if (TERMINAL.has(task.status)) return;
           continue;
         }
-        task.current.messages.push(userMessage(ai, 'Continue executing the script using the available tools. When the script is finished, call complete_script.'));
+        task.current.messages.push(userMessage(ai, cut
+          ? 'Your reply was cut off because it was too long. Reply again with ONE short tool call: a one-sentence thought and compact args (summarize long text in complete_script output).'
+          : 'Continue executing the script using the available tools. When the script is finished, call complete_script.'));
         await this.db.put('tasks', task);
         continue;
       }
@@ -530,5 +539,11 @@ function compact(out) {
   if (out === undefined || out === null) return { ok: true };
   const s = typeof out === 'string' ? out : safeStringify(out);
   if (s.length <= 7000) return out;
-  return { truncated: true, data: s.slice(0, 7000) };
+  // A page read: keep every element ref (the model can only click what it sees) and shorten the text instead.
+  if (Array.isArray(out?.elements) && typeof out.text === 'string') {
+    const elements = out.elements.map(({ href, options, ...e }) => ({ ...e, ...(href ? { href: String(href).slice(0, 80) } : {}), ...(Array.isArray(options) ? { options: options.slice(0, 8) } : {}) }));
+    const room = Math.max(800, 7000 - safeStringify({ ...out, text: '', elements }).length);
+    return { ...out, elements, text: out.text.slice(0, room), text_truncated: out.text.length > room };
+  }
+  return `${s.slice(0, 7000)}… [truncated]`;
 }

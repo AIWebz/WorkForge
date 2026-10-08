@@ -93,35 +93,45 @@ function analysisSchema(systemIds) {
 }
 
 // JSON schema the engine's constrained decoding enforces for the architecture,
-// so even small local models return a structurally valid employee.
+// so even small local models return a structurally valid employee. Constrained
+// decoding allows only these keys, in this order, so it mirrors the prompt's template.
 function architectureSchema(systemIds) {
   const str = { type: 'string' };
+  const int = { type: 'integer' };
   const strs = { type: 'array', items: str };
+  const level = { type: 'string', enum: ['allow', 'approval', 'deny'] };
   const field = { type: 'object', properties: { name: str, type: str, description: str }, required: ['name', 'type', 'description'] };
-  const toolNames = TOOLS.filter((t) => t.system !== 'internal').map((t) => t.name);
+  // Internal tools are allowed here (normalizeScript drops them; every script gets them anyway) so the
+  // grammar never forces a model that lists one into a different, more powerful tool.
+  const toolNames = TOOLS.map((t) => t.name);
   return {
     type: 'object',
     properties: {
       name: str, role: str, summary: str, instructions: str, goals: strs, rules: strs, entryScript: str,
       scripts: {
         type: 'array',
+        minItems: 1,
+        maxItems: 10,
         items: {
           type: 'object',
           properties: {
             id: str, name: str, description: str, purpose: str, instructions: str, trigger: str,
+            inputs: { type: 'array', items: field }, outputs: { type: 'array', items: field },
+            conditions: strs,
             systems: { type: 'array', items: { type: 'string', enum: systemIds } },
             tools: { type: 'array', items: { type: 'string', enum: toolNames } },
-            inputs: { type: 'array', items: field }, outputs: { type: 'array', items: field },
-            conditions: strs, dependencies: strs,
+            dependencies: strs,
             next: { type: 'array', items: { type: 'object', properties: { script: str, condition: str }, required: ['script', 'condition'] } },
-            failure: { type: 'object', properties: { strategy: { type: 'string', enum: ['retry', 'escalate', 'skip', 'stop'] }, maxRetries: { type: 'integer' }, escalateTo: str }, required: ['strategy', 'maxRetries', 'escalateTo'] },
+            failure: { type: 'object', properties: { strategy: { type: 'string', enum: ['retry', 'escalate', 'skip', 'stop'] }, maxRetries: int, escalateTo: str, notes: str }, required: ['strategy', 'maxRetries', 'escalateTo'] },
             approval: { type: 'object', properties: { required: { type: 'boolean' }, reason: str }, required: ['required', 'reason'] },
-            estimatedMinutes: { type: 'integer' },
+            estimatedMinutes: int,
           },
-          required: ['id', 'name', 'description', 'purpose', 'instructions', 'systems', 'tools', 'outputs', 'next', 'failure', 'approval', 'estimatedMinutes'],
+          required: ['id', 'name', 'description', 'purpose', 'instructions', 'outputs', 'systems', 'tools', 'next', 'failure', 'approval', 'estimatedMinutes'],
         },
       },
-      triggers: { type: 'array', items: { type: 'object', properties: { type: { type: 'string', enum: ['manual', 'schedule', 'browser'] }, label: str, input: str, entryScript: str, schedule: { type: 'object', properties: { everyMinutes: { type: 'integer' }, dailyAt: str }, required: ['everyMinutes', 'dailyAt'] } }, required: ['type', 'label', 'input', 'entryScript', 'schedule'] } },
+      triggers: { type: 'array', items: { type: 'object', properties: { type: { type: 'string', enum: ['manual', 'schedule', 'browser'] }, label: str, description: str, input: str, entryScript: str, schedule: { type: 'object', properties: { everyMinutes: int, dailyAt: str }, required: ['everyMinutes', 'dailyAt'] } }, required: ['type', 'label', 'input', 'entryScript', 'schedule'] } },
+      permissions: { type: 'object', additionalProperties: { type: 'object', properties: Object.fromEntries(SYSTEM_SCOPES.map((sc) => [sc, level])) } },
+      browser: { type: 'object', properties: { domains: strs }, required: ['domains'] },
       metrics: { type: 'array', items: { type: 'object', properties: { key: str, label: str }, required: ['key', 'label'] } },
       escalation: { type: 'object', properties: { policy: str }, required: ['policy'] },
       reporting: str,
@@ -132,7 +142,7 @@ function architectureSchema(systemIds) {
 
 export async function designArchitecture(ai, { request, business, analysis, form, connections = [] }) {
   const conns = connectionRows(connections);
-  const prompt = `Design the complete architecture for this AI employee. The number and kind of scripts must follow from the work described — do not use a fixed template. Typical employees have 4–14 scripts.
+  const prompt = `Design the complete architecture for this AI employee. The number and kind of scripts must follow from the work described — do not use a fixed template. Typical employees have 3–10 scripts (never more than 10); keep each script's text concise.
 
 ${BROWSER_HOW}
 
@@ -196,7 +206,7 @@ Return JSON:
   "escalation": {"policy": "when and how to involve a human"},
   "reporting": "what the employee reports and how often"
 }`;
-  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, schema: architectureSchema(Object.keys(allSystems(conns))), maxTokens: 7000 });
+  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, schema: architectureSchema(Object.keys(allSystems(conns))), maxTokens: 8000 });
   return data;
 }
 
