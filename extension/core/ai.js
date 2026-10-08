@@ -25,6 +25,7 @@ export function isConfigured(cfg) {
 // Approximate character budget for a conversation (context window is 16k tokens).
 const HISTORY_CHAR_BUDGET = 36000;
 const KEEP_RECENT_RESULTS = 2;
+const ANY_OBJECT = { type: 'object' };
 
 function trimHistory(messages) {
   let total = messages.reduce((a, m) => a + String(m.content).length, 0);
@@ -84,14 +85,26 @@ export async function chat(cfg, { system, messages, tools = [], maxTokens = 2048
     max_tokens: maxTokens,
     temperature: 0.2,
   };
+  // WebLLM's json_object mode always compiles a JSON schema (a missing schema
+  // fails with "Cannot pass non-string to std::string"), so always send one.
   if (tools.length) body.response_format = { type: 'json_object', schema: JSON.stringify(toolCallSchema(tools)) };
-  else if (json || schema) body.response_format = { type: 'json_object', ...(schema ? { schema: JSON.stringify(schema) } : {}) };
+  else if (json || schema) body.response_format = { type: 'json_object', schema: JSON.stringify(schema || ANY_OBJECT) };
 
   let res;
   try {
     res = await host.run(() => engine.chat.completions.create(body));
   } catch (e) {
-    throw new AIError(`The AI engine failed: ${e.message || e}`, { code: 'engine' });
+    // If constrained decoding cannot start, answer unconstrained once; the
+    // caller still parses and validates the JSON.
+    if (!body.response_format || !/grammar|schema|std::string/i.test(String(e?.message || e))) {
+      throw new AIError(`The AI engine failed: ${e.message || e}`, { code: 'engine' });
+    }
+    delete body.response_format;
+    try {
+      res = await host.run(() => engine.chat.completions.create(body));
+    } catch (e2) {
+      throw new AIError(`The AI engine failed: ${e2.message || e2}`, { code: 'engine' });
+    }
   }
   if (signal?.aborted) throw new AIError('Request cancelled', { code: 'aborted' });
   const choice = res.choices?.[0] || {};

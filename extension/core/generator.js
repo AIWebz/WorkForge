@@ -74,8 +74,22 @@ Return JSON:
   "metrics": [{"key": "snake_case", "label": "Human label"}],
   "triggers": ["when this employee should run (on demand, every N minutes, daily at HH:MM, inside a browser tab)"]
 }`;
-  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, maxTokens: 1500 });
+  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, schema: analysisSchema(Object.keys(allSystems(conns))), maxTokens: 1500 });
   return data;
+}
+
+// JSON schema for the requirements analysis (enforced by constrained decoding).
+function analysisSchema(systemIds) {
+  const str = { type: 'string' };
+  const strs = { type: 'array', items: str };
+  const properties = {
+    name: str, role: str, summary: str, responsibilities: strs, goals: strs, workflow_outline: strs,
+    systems_needed: { type: 'array', items: { type: 'string', enum: systemIds } },
+    human_approval_points: strs, risks: strs,
+    metrics: { type: 'array', items: { type: 'object', properties: { key: str, label: str }, required: ['key', 'label'] } },
+    triggers: strs,
+  };
+  return { type: 'object', properties, required: Object.keys(properties) };
 }
 
 // JSON schema the engine's constrained decoding enforces for the architecture,

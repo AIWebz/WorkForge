@@ -195,6 +195,20 @@ async function generationScreen(ctx) {
     el.innerHTML = `<div class="page"><div class="callout">${icon('info')}<div>This generation session is no longer active (generation state lives in the open tab). <a href="#/employees">View employees</a> or <a href="#/create">create a new one</a>.</div></div></div>`;
     return;
   }
+  // First use downloads the model; show that instead of an unexplained spinner.
+  const engineNote = () => {
+    const s = app.engine.status;
+    if (job.status !== 'running' || s.state !== 'loading') return '';
+    const pct = Math.round((s.progress || 0) * 100);
+    return `<div class="callout mt-16">${icon('download')}<div class="grow" style="min-width:0"><div class="small strong">Getting the AI engine ready${pct ? ` · ${pct}%` : ''}</div><div class="tiny muted">The model downloads once and is then cached on this device. Keep this tab open.</div><div class="meter mt-8"><span style="width:${pct}%"></span></div><div class="tiny faint mt-4 ellipsis">${esc(s.text || '')}</div></div></div>`;
+  };
+  const offEngine = app.engine.onStatus(() => {
+    const n = ctx.isCurrent() && el.querySelector('#engine-note');
+    if (!n) return;
+    n.innerHTML = engineNote();
+    if (n.firstElementChild) refreshIcons();
+  });
+  ctx.cleanup(offEngine);
   const render = async () => {
     if (!ctx.isCurrent()) return;
     const [employee, rows] = await Promise.all([job.employeeId ? app.db.get('employees', job.employeeId) : null, app.getConnections()]);
@@ -213,6 +227,7 @@ async function generationScreen(ctx) {
     return `<div class="gen-step ${st.status}"><span class="ic">${st.status === 'done' ? icon('check') : st.status === 'running' ? '<span class="spinner sm"></span>' : st.status === 'error' ? icon('x') : ''}</span><div class="grow"><div>${s.label}</div>${st.detail ? `<div class="tiny ${st.status === 'error' ? '' : 'muted'}">${esc(st.detail)}</div>` : ''}</div></div>`;
   }).join('')}
           <div class="gen-step ${employee ? 'done' : ''}"><span class="ic">${employee ? icon('check') : ''}</span><div><strong>Employee ready</strong></div></div></div>
+          <div id="engine-note">${engineNote()}</div>
           ${job.status === 'error' ? `<div class="callout danger mt-16">${icon('alert-triangle')}<div><div class="small">${esc(job.error)}</div><div class="row mt-8"><button class="btn btn-sm" id="retry">${icon('refresh-cw')} Retry</button><a class="btn btn-sm btn-ghost" href="#/create?request=${encodeURIComponent(job.request.split('\n')[0])}">Edit request</a></div></div></div>` : ''}
         </div>
         <div id="arch">${employee ? archHtml(employee, rows) : `<div class="card card-pad"><div class="empty">${job.status === 'error' ? '' : '<div class="spinner"></div>'}<h3>${job.status === 'error' ? 'Nothing was created' : 'The AI engine is designing the architecture'}</h3><p class="small">${job.status === 'error' ? 'Fix the issue and retry.' : 'Requirement analysis and architecture design are real model calls and can take a minute.'}</p></div></div>`}</div>
