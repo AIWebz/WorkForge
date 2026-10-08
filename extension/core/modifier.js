@@ -2,7 +2,7 @@
 // instruction into structured operations that are applied to the stored
 // employee architecture (with versioning so every change can be undone).
 import { chatJSON } from './ai.js';
-import { TOOL_MAP, SYSTEM_SCOPES, SCOPE_LABELS, DEFAULT_SCOPE_LEVELS, BROWSER_TOOLS, allSystems, catalogForPrompt, systemForUrl } from './catalog.js';
+import { TOOL_MAP, TOOLS, SYSTEM_SCOPES, SCOPE_LABELS, DEFAULT_SCOPE_LEVELS, BROWSER_TOOLS, allSystems, catalogForPrompt, systemForUrl } from './catalog.js';
 import { normalizeScript, usedSystems, validateEmployee, normalizeTriggers, scheduleNext, connectionRows, cleanDomain } from './employee.js';
 import { addMemory } from './memory.js';
 import { clone, slug, uid, now, truncate } from './util.js';
@@ -25,6 +25,66 @@ const OPS_DOC = `Supported operations (JSON objects in "operations"):
 - {"op":"add_memory","kind":"instructions|business|long_term","content":"…"}
 - {"op":"add_trigger","trigger":{"type":"manual|schedule","label","input","entryScript","schedule":{"everyMinutes":0,"dailyAt":"HH:MM"}}} | {"op":"remove_trigger","id":"trigger id"}
 - {"op":"run_task","input":"instruction for a new task","entry_script":"optional script id"}`;
+
+// JSON schema for constrained decoding of the controller's answer: one variant per
+// operation, real script/system/trigger/collection ids, no unknown keys.
+export function operationsSchema(employee, { collections = [], connections = [] } = {}) {
+  const str = { type: 'string' };
+  const int = { type: 'integer' };
+  const bool = { type: 'boolean' };
+  const strs = { type: 'array', items: str };
+  const oneOf = (values) => (values.length ? { type: 'string', enum: values } : str);
+  const systemIds = Object.keys(allSystems(connectionRows(connections)));
+  const scriptIds = (employee.scripts || []).map((s) => s.id);
+  const scriptId = oneOf(scriptIds);
+  const field = { type: 'object', properties: { name: str, type: str, description: str }, required: ['name', 'type', 'description'] };
+  const scriptFields = {
+    name: str, description: str, purpose: str, instructions: str,
+    systems: { type: 'array', items: oneOf(systemIds) },
+    tools: { type: 'array', items: oneOf(TOOLS.filter((t) => t.system !== 'internal').map((t) => t.name)) },
+    inputs: { type: 'array', items: field }, outputs: { type: 'array', items: field }, conditions: strs,
+    next: { type: 'array', items: { type: 'object', properties: { script: str, condition: str }, required: ['script', 'condition'] } },
+    failure: { type: 'object', properties: { strategy: { type: 'string', enum: ['retry', 'escalate', 'skip', 'stop'] }, maxRetries: int, escalateTo: str }, required: ['strategy', 'maxRetries', 'escalateTo'] },
+    approval: { type: 'object', properties: { required: bool, reason: str }, required: ['required', 'reason'] },
+    estimatedMinutes: int,
+  };
+  const op = (name, props) => ({ type: 'object', properties: { op: { type: 'string', enum: [name] }, ...props }, required: ['op', ...Object.keys(props)] });
+  const variants = [
+    // "changes" keys are optional so the model only sends what changes (and never echoes truncated text back).
+    op('update_profile', { changes: { type: 'object', properties: { name: str, role: str, summary: str, instructions: str } } }),
+    op('add_rule', { rule: str }),
+    op('remove_rule', { text: str }),
+    op('add_goal', { goal: str }),
+    op('add_script', {
+      script: { type: 'object', properties: { id: str, ...scriptFields }, required: ['id', 'name', 'description', 'instructions', 'systems', 'tools', 'outputs', 'next', 'failure', 'approval', 'estimatedMinutes'] },
+      after: oneOf(scriptIds.length ? ['', ...scriptIds] : []), condition: str, replace_edges: bool,
+    }),
+    op('update_script', { id: scriptId, changes: { type: 'object', properties: scriptFields } }),
+    op('remove_script', { id: scriptId }),
+    op('add_transition', { from: str, to: str, condition: str }),
+    op('remove_transition', { from: str, to: str }),
+    op('set_entry', { id: scriptId }),
+    op('add_system', { system: oneOf(systemIds) }),
+    op('remove_system', { system: oneOf(systemIds) }),
+    op('set_permission', { system: oneOf([...systemIds, 'files']), scope: { type: 'string', enum: SYSTEM_SCOPES }, level: { type: 'string', enum: ['allow', 'approval', 'deny'] } }),
+    op('set_script_approval', { id: scriptId, required: bool, reason: str }),
+    op('set_web_domains', { add: strs, remove: strs }),
+    op('grant_collection', { collection_id: oneOf(collections.map((c) => c.id)) }),
+    op('revoke_collection', { collection_id: oneOf((employee.collections || []).filter(Boolean)) }),
+    op('add_memory', { kind: { type: 'string', enum: ['instructions', 'business', 'long_term'] }, content: str }),
+    op('add_trigger', { trigger: { type: 'object', properties: {
+      type: { type: 'string', enum: ['manual', 'schedule'] }, label: str, input: str, entryScript: str,
+      schedule: { type: 'object', properties: { everyMinutes: int, dailyAt: { type: 'string', pattern: '^(([01]?[0-9]|2[0-3]):[0-5][0-9])?$' } }, required: ['everyMinutes', 'dailyAt'] },
+    }, required: ['type', 'label', 'input', 'entryScript', 'schedule'] } }),
+    op('remove_trigger', { id: oneOf((employee.triggers || []).map((t) => t.id)) }),
+    op('run_task', { input: str, entry_script: str }),
+  ];
+  return {
+    type: 'object',
+    properties: { reply: str, operations: { type: 'array', items: { anyOf: variants }, maxItems: 12 } },
+    required: ['reply', 'operations'],
+  };
+}
 
 export function employeeDigest(employee, collections = [], connections = []) {
   const systems = allSystems(connectionRows(connections));
@@ -69,8 +129,10 @@ ${instruction}
 </owner_instruction>
 
 Return JSON: {"reply":"short confirmation or answer addressed to the owner, describing exactly what changed","operations":[…]}`;
-  const { data } = await chatJSON(ai, { system, prompt, maxTokens: 3000 });
-  return { reply: String(data.reply || ''), operations: Array.isArray(data.operations) ? data.operations : [] };
+  const schema = operationsSchema(employee, { collections, connections: conns });
+  const { data } = await chatJSON(ai, { system, prompt, schema, maxTokens: 3000 });
+  const operations = Array.isArray(data?.operations) ? data.operations.filter((o) => o && typeof o === 'object' && typeof o.op === 'string') : [];
+  return { reply: String(data?.reply || ''), operations };
 }
 
 /** Apply operations to a copy of the employee. Returns {employee, results, runTasks}. */
@@ -86,7 +148,8 @@ export function applyOperations(original, operations, { collections = [], connec
   const ids = () => new Set(e.scripts.map((s) => s.id));
   const find = (id) => e.scripts.find((s) => s.id === slug(id));
   const ok = (op, message) => results.push({ op: op.op, ok: true, message });
-  const fail = (op, message) => results.push({ op: op.op, ok: false, message });
+  const fail = (op, message) => results.push({ op: op?.op, ok: false, message });
+  const text = (v) => (typeof v === 'string' ? v.trim() : '');
 
   for (const op of operations) {
     try {
@@ -98,15 +161,16 @@ export function applyOperations(original, operations, { collections = [], connec
           ok(op, `Updated ${Object.keys(c).join(', ')}`);
           break;
         }
-        case 'add_rule': e.rules.push(String(op.rule)); ok(op, `Added rule: ${op.rule}`); break;
+        case 'add_rule': if (!text(op.rule)) { fail(op, 'Empty rule'); break; } e.rules.push(text(op.rule)); ok(op, `Added rule: ${text(op.rule)}`); break;
         case 'remove_rule': {
           const before = e.rules.length;
           e.rules = e.rules.filter((r) => !r.toLowerCase().includes(String(op.text || '').toLowerCase()));
           before === e.rules.length ? fail(op, 'Rule not found') : ok(op, 'Removed rule');
           break;
         }
-        case 'add_goal': e.goals.push(String(op.goal)); ok(op, `Added goal: ${op.goal}`); break;
+        case 'add_goal': if (!text(op.goal)) { fail(op, 'Empty goal'); break; } e.goals.push(text(op.goal)); ok(op, `Added goal: ${text(op.goal)}`); break;
         case 'add_script': {
+          if (!op.script || typeof op.script !== 'object' || !(text(op.script.name) || text(op.script.instructions))) { fail(op, 'Script definition missing'); break; }
           const used = ids();
           const s = normalizeScript(op.script || {}, e.scripts.length, used, conns);
           const existing = new Set(e.scripts.map((x) => x.id).concat(s.id));
@@ -235,6 +299,7 @@ export function applyOperations(original, operations, { collections = [], connec
           break;
         }
         case 'add_memory':
+          if (!text(op.content)) { fail(op, 'Empty memory'); break; }
           results.push({ op: 'add_memory', ok: true, message: `Remembered: ${truncate(op.content, 80)}`, memory: { kind: op.kind || 'long_term', content: String(op.content) } });
           break;
         case 'add_trigger': {
@@ -252,6 +317,7 @@ export function applyOperations(original, operations, { collections = [], connec
           break;
         }
         case 'run_task':
+          if (!text(op.input)) { fail(op, 'Task instruction missing'); break; }
           runTasks.push({ input: String(op.input || ''), entryScript: op.entry_script || '' });
           ok(op, `Starting task: ${truncate(op.input, 80)}`);
           break;

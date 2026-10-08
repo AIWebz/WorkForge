@@ -14,11 +14,12 @@ const { prebuiltAppConfig } = await import(tmp);
 const ids = (process.argv[2] || '').split(',').map((s) => s.trim()).filter(Boolean);
 if (!ids.length) { console.log('No model requested.'); process.exit(0); }
 
-async function download(url, dest) {
+async function download(url, dest, { optional = false } = {}) {
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       const res = await fetch(url);
-      if (res.ok) { await writeFile(dest, Buffer.from(await res.arrayBuffer())); return; }
+      if (res.ok) { await writeFile(dest, Buffer.from(await res.arrayBuffer())); return true; }
+      if (optional && res.status === 404) return false;
       console.warn(`  ${res.status} ${url} (attempt ${attempt})`);
     } catch (e) {
       console.warn(`  ${e.cause?.code || e.message} ${url} (attempt ${attempt})`);
@@ -38,10 +39,13 @@ for (const id of ids) {
   await mkdir(dir, { recursive: true });
   console.log(`Fetching ${id}`);
   await download(`${src}mlc-chat-config.json`, `${dir}/mlc-chat-config.json`);
-  await download(`${src}ndarray-cache.json`, `${dir}/ndarray-cache.json`);
+  // WebLLM reads tensor-cache.json; older model repos only have the same file as ndarray-cache.json.
+  if (!(await download(`${src}tensor-cache.json`, `${dir}/tensor-cache.json`, { optional: true }))) {
+    await download(`${src}ndarray-cache.json`, `${dir}/tensor-cache.json`);
+  }
   const cfg = JSON.parse(await readFile(`${dir}/mlc-chat-config.json`, 'utf8'));
   for (const f of cfg.tokenizer_files || []) await download(`${src}${f}`, `${dir}/${f}`);
-  const cache = JSON.parse(await readFile(`${dir}/ndarray-cache.json`, 'utf8'));
+  const cache = JSON.parse(await readFile(`${dir}/tensor-cache.json`, 'utf8'));
   const shards = [...new Set(cache.records.map((r) => r.dataPath))];
   for (const [i, shard] of shards.entries()) {
     process.stdout.write(`  shard ${i + 1}/${shards.length}\r`);

@@ -11,6 +11,10 @@ export const MODELS = [
 ];
 export const CONTEXT_WINDOW = 16384;
 const SKIP_KEY = 'workforge.engine.skip';
+const OUT_OF_MEMORY = /memory|device (was )?lost|exceeds? (the )?limit|maxBufferSize|maxStorageBufferBindingSize|allocat/i;
+
+// The engine worker reports errors as strings ("TypeError: Failed to fetch").
+const asError = (err) => (err instanceof Error ? err : new Error(String(err ?? 'Unknown error').replace(/^\w*Error: /, '')));
 
 export function modelInfo(id) {
   return MODELS.find((m) => m.id === id || m.f32 === id) || { id, label: id || 'Automatic', vramMB: 0 };
@@ -64,9 +68,11 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
     if (!info.supported) throw new Error(info.reason);
     const lowEnd = info.fallback || (globalThis.navigator?.deviceMemory && navigator.deviceMemory <= 4) || (info.maxBuffer && info.maxBuffer < 1024 ** 3);
     let list = lowEnd ? MODELS.slice(1) : MODELS.slice();
-    const hosted = cfg.hosted || [];
-    if (cfg.source?.base && hosted.length) list = list.filter((m) => hosted.includes(m.id) || hosted.includes(m.f32));
-    const ids = list.map((m) => (info.f16 ? m.id : m.f32));
+    const pick = (m) => (info.f16 ? m.id : m.f32);
+    // Prefer the builds this site hosts; any other build still comes from the public mirror.
+    const hosted = cfg.source?.base ? (cfg.hosted || []) : [];
+    if (hosted.length) list = [...list].sort((a, b) => hosted.includes(pick(b)) - hosted.includes(pick(a)));
+    const ids = list.map(pick);
     const skip = new Set(store.get());
     const usable = ids.filter((id) => !skip.has(id));
     return usable.length ? usable : ids.slice(-1);
@@ -74,15 +80,16 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
 
   function appConfigFor(webllm, cfg) {
     const base = cfg?.source?.base;
-    if (!base) return webllm.prebuiltAppConfig;
-    // Self-hosted: weights at <base>models/<id>/resolve/main/, libraries at <base>models/libs/.
+    const hosted = cfg?.hosted || [];
+    if (!base || !hosted.length) return webllm.prebuiltAppConfig;
+    // Self-hosted builds: weights at <base>models/<id>/resolve/main/, libraries at <base>models/libs/.
     return {
       ...webllm.prebuiltAppConfig,
-      model_list: webllm.prebuiltAppConfig.model_list.map((r) => ({
+      model_list: webllm.prebuiltAppConfig.model_list.map((r) => (hosted.includes(r.model_id) ? {
         ...r,
         model: `${base}models/${r.model_id}/`,
         model_lib: `${base}models/libs/${r.model_lib.split('/').pop()}`,
-      })),
+      } : r)),
     };
   }
 
@@ -113,14 +120,16 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
           set({ state: 'ready', progress: 1, text: 'Ready on this device', model: id });
           return engine;
         } catch (err) {
-          lastErr = err;
-          if (ids.indexOf(id) < ids.length - 1) store.add(id); // too big or failed: try a smaller model next time too
+          lastErr = asError(err);
+          // Too big for this GPU: skip it from now on. Network errors are retried next time.
+          if (ids.indexOf(id) < ids.length - 1 && OUT_OF_MEMORY.test(lastErr.message)) store.add(id);
         }
       }
       throw lastErr || new Error('The AI engine could not start');
     })().catch((err) => {
-      set({ state: 'error', text: err.message || String(err) });
-      throw err;
+      const e = asError(err);
+      set({ state: 'error', text: e.message });
+      throw e;
     }).finally(() => { loading = null; });
     return loading;
   }
