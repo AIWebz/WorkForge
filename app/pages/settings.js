@@ -1,8 +1,8 @@
 import { esc, icon, toast, modal, confirmDialog, download, refreshIcons } from '../ui.js';
-import { PROVIDERS, testConnection } from '../../extension/core/ai.js';
+import { testEngine } from '../../extension/core/ai.js';
+import { MODELS, modelInfo } from '../../extension/core/engine.js';
 import { STORE_NAMES } from '../../extension/core/db.js';
 import { app, syncExtension } from '../state.js';
-import { vault } from '../vault.js';
 import { systemPickerHtml, bindSystemPicker } from './systems.js';
 
 const SECTIONS = [['business', 'building-2', 'Business profile'], ['ai', 'cpu', 'AI Engine'], ['security', 'shield', 'Security'], ['data', 'database', 'Data & backup']];
@@ -16,7 +16,7 @@ export default async function settings(ctx) {
     <div id="section"></div></div>`;
   const host = el.querySelector('#section');
   if (section === 'business') return businessSection(host);
-  if (section === 'security') return securitySection(host, ctx);
+  if (section === 'security') return securitySection(host);
   if (section === 'data') return dataSection(host, navigate);
   return aiSection(host);
 }
@@ -48,143 +48,104 @@ async function businessSection(host) {
 }
 
 // ------------------------------------------------------------ AI engine
-export function aiFormHtml(cfg, hasKey) {
-  const p = cfg.provider || 'anthropic';
-  const def = PROVIDERS[p];
+// ------------------------------------------------------------ AI engine
+/** Model picker + download/test controls. Used by Settings and onboarding. */
+export async function engineFormHtml() {
+  const cfg = await app.getAI();
+  const gpu = await app.engine.gpuInfo();
+  const hosted = await app.hostedModels();
+  const src = cfg.sourceName;
   return `<div class="form-grid">
-    <label class="field"><span>Provider</span><select class="select" id="ai-provider">${Object.entries(PROVIDERS).map(([id, x]) => `<option value="${id}" ${id === p ? 'selected' : ''}>${x.label}</option>`).join('')}</select></label>
-    <div class="form-row">
-      <label class="field"><span>Model</span><input class="input" id="ai-model" list="ai-models" value="${esc(cfg.model || def.defaultModel)}" placeholder="${p === 'anthropic' ? 'claude-opus-5-5' : 'model id'}"><datalist id="ai-models">${def.models.map((m) => `<option value="${m}">`).join('')}</datalist></label>
-      <label class="field" ${p === 'anthropic' ? '' : 'hidden'} id="ai-effort-wrap"><span>Reasoning effort</span><select class="select" id="ai-effort">${['', 'low', 'medium', 'high', 'xhigh'].map((x) => `<option value="${x}" ${cfg.effort === x ? 'selected' : ''}>${x || 'Model default'}</option>`).join('')}</select></label>
+    ${gpu.supported ? '' : `<div class="callout danger">${icon('alert-triangle')}<div><strong>This browser can't run the AI engine.</strong><div class="small mt-4">${esc(gpu.reason)}</div></div></div>`}
+    <div class="field"><span>Model</span>
+      <div class="col gap-6">${MODELS.map((m) => `<label class="check model-opt" style="align-items:flex-start"><input type="radio" name="ai-model" value="${m.id}" ${m.id === cfg.model ? 'checked' : ''}><div><div class="strong">${esc(m.label)} <span class="tiny muted mono">${esc(m.id.replace(/-q4f16_1-MLC$/, ''))}</span></div><div class="help">${esc(m.note)} · needs about ${(m.vramMB / 1024).toFixed(1)} GB of GPU memory${hosted.includes(m.id) ? ' · <strong>hosted on this site</strong>' : ''}</div></div></label>`).join('')}</div>
     </div>
-    <label class="field" id="ai-base-wrap" ${p === 'anthropic' ? 'hidden' : ''}><span>Base URL</span><input class="input" id="ai-base" value="${esc(cfg.baseUrl || def.baseUrl)}" placeholder="https://…/v1"><span class="help">OpenAI-compatible endpoints (OpenAI, OpenRouter, Groq, a local Ollama with OLLAMA_ORIGINS set…) must allow browser requests.</span></label>
-    <label class="field"><span>API key</span><input class="input" type="password" id="ai-key" autocomplete="off" placeholder="${hasKey ? '•••••••• saved in vault — leave blank to keep' : def.keyHint}"><span class="help">Stored only in this browser's AI key vault (${vault.mode}) and sent only to the provider above. Never commit keys to your repository.</span></label>
-    <div class="row"><button class="btn" id="ai-test">${icon('plug-zap')} Test connection</button><button class="btn btn-primary" id="ai-save">${icon('save')} Save</button><span class="small muted" id="ai-status"></span></div>
+    <div class="field"><span>Download the model from</span>
+      <div class="seg" id="ai-source">
+        <button type="button" data-src="site" class="${src === 'site' ? 'active' : ''}" ${hosted.length ? '' : 'disabled title="Enable model hosting in the GitHub Pages workflow first"'}>This site</button>
+        <button type="button" data-src="mirror" class="${src !== 'site' ? 'active' : ''}">Public model mirror</button>
+      </div>
+      <span class="help">${hosted.length ? `This site hosts: ${hosted.map(esc).join(', ')}.` : 'This site does not host model weights yet — see “Self-host the model” in the README. Until then weights download once from the public open-model mirror (Hugging Face).'} Weights are cached by your browser; nothing you type is sent anywhere.</span>
+    </div>
+    <div class="engine-progress" id="ai-progress" hidden><div class="meter"><span id="ai-bar" style="width:0%"></span></div><div class="tiny muted mt-4" id="ai-progress-text"></div></div>
+    <div class="row wrap"><button class="btn btn-primary" id="ai-save">${icon('save')} Save</button><button class="btn" id="ai-load" ${gpu.supported ? '' : 'disabled'}>${icon('download')} Load &amp; test</button><button class="btn btn-ghost" id="ai-delete">${icon('trash-2')} Remove downloaded model</button><span class="small muted" id="ai-status"></span></div>
   </div>`;
 }
 
-export function bindAiForm(root, onSaved) {
-  const q = (s) => root.querySelector(s);
-  q('#ai-provider').addEventListener('change', () => {
-    const p = q('#ai-provider').value;
-    const def = PROVIDERS[p];
-    q('#ai-model').value = def.defaultModel;
-    q('#ai-models').innerHTML = def.models.map((m) => `<option value="${m}">`).join('');
-    q('#ai-base').value = def.baseUrl;
-    q('#ai-base-wrap').hidden = p === 'anthropic';
-    q('#ai-effort-wrap').hidden = p !== 'anthropic';
-    q('#ai-key').placeholder = def.keyHint;
-  });
-  const read = async () => {
-    const provider = q('#ai-provider').value;
-    const cfg = { provider, model: q('#ai-model').value.trim(), baseUrl: provider === 'anthropic' ? '' : q('#ai-base').value.trim(), effort: provider === 'anthropic' ? q('#ai-effort').value : '' };
-    const typed = q('#ai-key').value.trim();
-    const apiKey = typed || vault.get('ai.apiKey') || '';
-    return { cfg, apiKey, typed };
-  };
+export function bindEngineForm(root, onSaved) {
+  const q = (sel) => root.querySelector(sel);
+  let source = q('#ai-source .active')?.dataset.src || 'mirror';
+  root.querySelectorAll('#ai-source [data-src]').forEach((b) => b.addEventListener('click', () => {
+    if (b.disabled) return;
+    source = b.dataset.src;
+    root.querySelectorAll('#ai-source [data-src]').forEach((x) => x.classList.toggle('active', x === b));
+  }));
   const status = (t, cls = 'muted') => { q('#ai-status').className = `small ${cls}`; q('#ai-status').textContent = t; };
-  q('#ai-test').onclick = async () => {
-    if (vault.locked) return unlockDialog();
-    const { cfg, apiKey } = await read();
-    status('Testing…');
-    try {
-      const r = await testConnection({ ...cfg, apiKey });
-      status(r.ok ? `Connected · ${r.model}` : `Responded: “${r.text}”`, r.ok ? 's-ok' : 's-wait');
-    } catch (e) { status(e.message, 's-err'); }
-  };
+  const model = () => q('[name=ai-model]:checked')?.value;
+  const save = async () => { await app.saveAI({ model: model(), source }); return app.getAI(); };
+  const off = app.engine.onStatus((st) => {
+    const bar = q('#ai-bar');
+    if (!bar) return off();
+    q('#ai-progress').hidden = st.state !== 'loading';
+    bar.style.width = `${Math.round((st.progress || 0) * 100)}%`;
+    q('#ai-progress-text').textContent = st.text || '';
+  });
   q('#ai-save').onclick = async () => {
-    if (vault.locked) return unlockDialog();
-    const { cfg, typed } = await read();
-    if (!cfg.model) return toast('Choose a model', 'error');
-    await app.saveAI(cfg, typed ? typed : undefined);
-    q('#ai-key').value = '';
-    q('#ai-key').placeholder = '•••••••• saved in vault — leave blank to keep';
+    await save();
     status('Saved', 's-ok');
-    toast('AI engine saved', 'success');
+    toast(`AI engine: ${modelInfo(model()).label}`, 'success');
     onSaved && onSaved();
+  };
+  q('#ai-load').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    status('Loading the model — the first time downloads it to this browser…');
+    try {
+      const cfg = await save();
+      const r = await testEngine(cfg);
+      status(r.ok ? `Running on this device · ${modelInfo(cfg.model).label}` : `Model answered: “${r.text}”`, r.ok ? 's-ok' : 's-wait');
+      onSaved && onSaved();
+    } catch (err) { status(err.message, 's-err'); } finally { btn.disabled = false; }
+  };
+  q('#ai-delete').onclick = async () => {
+    if (!(await confirmDialog('Remove the downloaded model from this browser? It downloads again the next time an employee runs.', { confirm: 'Remove', danger: true }))) return;
+    try { await app.engine.deleteCache(await app.getAI()); status('Removed from this browser'); } catch (err) { status(err.message, 's-err'); }
   };
 }
 
 async function aiSection(host) {
-  const cfg = await app.db.getSetting('ai', {});
   host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.3fr 1fr;align-items:start">
-    <div class="card card-pad">${vault.locked ? `<div class="callout warn mb-16">${icon('lock')}<div>The AI key vault is locked. <button class="link-btn" id="unlock">Unlock</button></div></div>` : ''}${aiFormHtml(cfg, !!vault.get('ai.apiKey'))}</div>
+    <div class="card card-pad">${await engineFormHtml()}</div>
     <div class="card card-pad col">
       <h3>${icon('cpu')} How the AI engine runs</h3>
-      <p class="small muted">WorkForge is a static web app. The AI engine runs in this browser tab and calls your model provider directly with your key — there is no WorkForge server in between.</p>
+      <p class="small muted">The AI engine is an open-source language model that runs <strong>on this computer's GPU</strong>, inside your browser (WebGPU). There is no AI provider, no account and no API key.</p>
       <ul class="small muted" style="padding-left:18px;margin:0">
-        <li>Generation: requirement analysis + architecture design calls.</li>
-        <li>Execution: one model turn per step. Employees act in your systems through the browser extension, with your own login; memory and knowledge files stay in this browser.</li>
-        <li>Usage is billed by your provider to your account. Token counts are recorded per task.</li>
-        <li>Claude models are called with the <code>anthropic-dangerous-direct-browser-access</code> header, which is required for browser-side use. Use a key with spend limits.</li>
+        <li>The model is downloaded once and cached by the browser. Self-host it on your GitHub Pages site to serve it from your own repository.</li>
+        <li>Generation (analysis and architecture) and every script step run through this engine. Answers are constrained to valid JSON tool calls, so small models stay reliable.</li>
+        <li>Prompts, files and results never leave this device.</li>
+        <li>Bigger models give better results but need more GPU memory. On GPUs without 16-bit shader support WorkForge automatically uses the 32-bit build.</li>
       </ul>
     </div>
   </div>`;
-  host.querySelector('#unlock')?.addEventListener('click', () => unlockDialog(() => aiSection(host)));
-  bindAiForm(host);
+  bindEngineForm(host);
   refreshIcons();
 }
 
-// ------------------------------------------------------------ security
-function securitySection(host, ctx) {
+function securitySection(host) {
   const s = app.settings;
   host.innerHTML = `<div class="grid-2" style="align-items:start">
     <div class="card card-pad form-grid">
-      <h3>${icon('key-round')} AI key vault</h3>
-      <p class="small muted">The only secret WorkForge keeps is your AI provider key — employees use your own browser login in your systems, so there are no passwords or tokens to store. The key is never written to source code or the database. Choose where this browser keeps it:</p>
-      ${[['session', 'Session only', 'Cleared when this tab closes. Most private; re-enter the key each session.'], ['encrypted', 'Encrypted with a passphrase', 'AES-256-GCM in local storage, key derived with PBKDF2 (310k iterations). Unlock once per session.'], ['device', 'This device (unencrypted)', 'Convenient for a personal machine. Anyone with access to this browser profile can read the key.']]
-    .map(([id, t, d]) => `<label class="check" style="align-items:flex-start"><input type="radio" name="vmode" value="${id}" ${vault.mode === id ? 'checked' : ''}><div><div class="strong">${t}</div><div class="help">${d}</div></div></label>`).join('')}
-      <label class="field" id="pass-wrap" hidden><span>New passphrase</span><input class="input" type="password" id="pass" autocomplete="new-password" placeholder="At least 8 characters"></label>
-      <div class="row"><button class="btn btn-primary" id="apply-mode">Apply</button>${vault.mode === 'encrypted' ? `<button class="btn" id="lock">${icon(vault.locked ? 'unlock' : 'lock')} ${vault.locked ? 'Unlock' : 'Lock now'}</button>` : ''}</div>
-      <p class="help">Current: <strong>${vault.mode}</strong>${vault.locked ? ' (locked)' : ''} · AI key ${vault.locked ? 'unavailable while locked' : vault.get('ai.apiKey') ? 'stored' : 'not stored'}.</p>
-    </div>
-    <div class="card card-pad form-grid">
       <h3>${icon('shield-check')} Execution safeguards</h3>
       <div class="between"><div><div class="strong small">Require approval for every outbound action</div><div class="help">Overrides employee permissions: every click and every form input in your systems waits for your approval.</div></div><label class="toggle"><input type="checkbox" id="strict" ${s.approveAllOutbound ? 'checked' : ''}><span></span></label></div>
-      <div class="between"><div><div class="strong small">Share the AI key with the browser extension</div><div class="help">When paired, the extension receives your AI key (kept in its session storage, cleared when the browser closes) so employees can also be started from its side panel. Off: enter a key in the extension yourself.</div></div><label class="toggle"><input type="checkbox" id="share" ${s.shareAiKeyWithExtension ? 'checked' : ''}><span></span></label></div>
-      <div class="callout">${icon('info')}<div class="small">Always enforced: employees only get tools their scripts need, permission levels are checked on every call, unknown tools are blocked, employees can only open the systems they were given (other websites you allow are read-only), they never type into password fields, each employee only sees its own memory and granted collections, and every action is written to the audit log.</div></div>
+      <div class="callout">${icon('info')}<div class="small">Always enforced: employees only get the tools their scripts need, permission levels are checked on every call, unknown tools are blocked, employees can only open the systems they were given (other websites you allow are read-only), they never type into password fields, each employee only sees its own memory and granted collections, and every action is written to the audit log.</div></div>
+    </div>
+    <div class="card card-pad form-grid">
+      <h3>${icon('lock')} No secrets to keep</h3>
+      <p class="small muted">WorkForge stores no passwords, tokens or API keys. The AI engine runs on this device, and employees work in your systems through browser tabs that use your own signed-in session. Your data — employees, memory, files, logs — stays in this browser's storage (IndexedDB). Export it from Data &amp; backup.</p>
     </div>
   </div>`;
-  const pw = host.querySelector('#pass-wrap');
-  host.querySelectorAll('[name=vmode]').forEach((r) => r.addEventListener('change', () => { pw.hidden = r.value !== 'encrypted' || !r.checked; }));
-  host.querySelector('#apply-mode').onclick = async () => {
-    const mode = host.querySelector('[name=vmode]:checked').value;
-    try {
-      if (vault.locked) return unlockDialog(() => securitySection(host, ctx));
-      await vault.setMode(mode, host.querySelector('#pass').value);
-      toast(`Vault mode: ${mode}`, 'success');
-      securitySection(host, ctx);
-    } catch (e) { toast(e.message, 'error'); }
-  };
-  host.querySelector('#lock')?.addEventListener('click', () => {
-    if (vault.locked) unlockDialog(() => securitySection(host, ctx));
-    else { vault.lock(); securitySection(host, ctx); }
-  });
-  host.querySelector('#strict').onchange = (e) => app.saveSecurity({ approveAllOutbound: e.target.checked }).then(() => toast('Saved', 'success'));
-  host.querySelector('#share').onchange = async (e) => {
-    await app.saveSecurity({ shareAiKeyWithExtension: e.target.checked });
-    toast(e.target.checked ? 'The AI key will be shared on the next sync' : 'The AI key is no longer shared with the extension', 'success');
-    if (app.bridge.paired) syncExtension().catch(() => {});
-  };
+  host.querySelector('#strict').onchange = (e) => app.saveSecurity({ approveAllOutbound: e.target.checked }).then(() => { toast('Saved', 'success'); if (app.bridge.paired) syncExtension().catch(() => {}); });
   refreshIcons();
-}
-
-export function unlockDialog(after) {
-  modal({
-    title: 'Unlock the AI key vault',
-    subtitle: 'Your AI provider key is encrypted with your passphrase.',
-    body: '<label class="field"><span>Passphrase</span><input class="input" type="password" id="unlock-pass" autocomplete="current-password"></label>',
-    actions: [
-      { label: 'Cancel' },
-      { label: 'Unlock', primary: true, icon: 'unlock', onClick: async (m) => { await vault.unlock(m.querySelector('#unlock-pass').value); toast('Vault unlocked', 'success'); after && after(); } },
-    ],
-    onMount(m, close) {
-      m.querySelector('#unlock-pass').addEventListener('keydown', async (e) => {
-        if (e.key !== 'Enter') return;
-        try { await vault.unlock(e.target.value); close(); toast('Vault unlocked', 'success'); after && after(); } catch (err) { toast(err.message, 'error'); }
-      });
-    },
-  });
 }
 
 // ------------------------------------------------------------ data
@@ -192,12 +153,12 @@ function dataSection(host, navigate) {
   host.innerHTML = `<div class="grid-2" style="align-items:start">
     <div class="card card-pad form-grid">
       <h3>${icon('download')} Backup</h3>
-      <p class="small muted">Export employees, memory, files, tasks, activity, approvals and reports as JSON. Your AI key is never included.</p>
+      <p class="small muted">Export employees, memory, files, tasks, activity, approvals and reports as JSON. The downloaded AI model is not included (it stays in the browser cache).</p>
       <div class="row"><button class="btn" id="export">${icon('download')} Export backup</button><label class="btn">${icon('upload')} Import backup<input type="file" accept="application/json" id="import" hidden></label></div>
     </div>
     <div class="card card-pad form-grid">
       <h3 style="color:var(--danger)">${icon('trash-2')} Danger zone</h3>
-      <p class="small muted">Delete all WorkForge data stored in this browser, including the AI key.</p>
+      <p class="small muted">Delete all WorkForge data stored in this browser.</p>
       <div><button class="btn btn-danger" id="wipe">Delete all data</button></div>
     </div>
   </div>`;
@@ -219,9 +180,9 @@ function dataSection(host, navigate) {
     } catch (err) { toast(err.message, 'error'); }
   };
   host.querySelector('#wipe').onclick = async () => {
-    if (!(await confirmDialog('This permanently deletes all employees, files, tasks, logs and the AI key in this browser.', { confirm: 'Delete everything', danger: true }))) return;
+    if (!(await confirmDialog('This permanently deletes all employees, files, tasks and logs in this browser.', { confirm: 'Delete everything', danger: true }))) return;
     for (const s of STORE_NAMES) await app.db.clear(s);
-    await vault.wipe();
+    await app.engine.unload();
     await app.load();
     toast('All data deleted');
     navigate('/');

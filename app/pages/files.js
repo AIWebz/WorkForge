@@ -1,7 +1,6 @@
 import { esc, icon, refreshIcons, emptyState, toast, modal, confirmDialog, drawer, timeAgo, avatar } from '../ui.js';
 import { parseFile, extOf, SUPPORTED, IMAGE_TYPES } from '../fileparse.js';
 import { chunkText, uid, now } from '../../extension/core/util.js';
-import { describeImage } from '../../extension/core/ai.js';
 
 const DEFAULT_COLLECTIONS = ['Company Documentation', 'Product Catalog', 'Pricing', 'Sales Materials', 'Customer Support', 'Internal Procedures'];
 
@@ -37,7 +36,7 @@ export default async function files(ctx) {
           <label class="dropzone" id="drop">${icon('upload-cloud', 'i-lg')}<div class="strong mt-8" style="color:var(--text)">Drop files here or click to upload</div><div class="small">${SUPPORTED.map((x) => x.toUpperCase()).filter((x, i, a) => a.indexOf(x) === i).join(' · ')} — up to 25 MB</div><input type="file" id="file-input" multiple hidden accept="${SUPPORTED.map((x) => `.${x}`).join(',')}"></label>
           <div class="card"><div class="card-head"><h3>Files</h3><span class="small muted">${list.length}</span></div><div class="card-body" style="padding-top:4px">
             ${list.length ? list.map((f) => `<div class="file-row"><span class="file-ic">${esc(extOf(f.name))}</span><div class="grow"><div class="small strong ellipsis">${esc(f.name)}</div><div class="tiny muted">${(f.size / 1024).toFixed(0)} KB · ${f.chunks || 0} chunks · ${f.chars ? `${f.chars.toLocaleString()} chars` : 'no text'} · ${timeAgo(f.createdAt)}${f.meta?.scanned ? ' · <span class="s-wait">scanned PDF: no text layer</span>' : ''}</div></div>
-              ${f.status === 'error' ? `<span class="badge badge-danger" title="${esc(f.error)}">Error</span>` : f.status === 'needs_text' ? `<button class="btn btn-xs" data-ai="${f.id}">${icon('sparkles')} Extract with AI</button>` : '<span class="badge badge-success">Indexed</span>'}
+              ${f.status === 'error' ? `<span class="badge badge-danger" title="${esc(f.error)}">Error</span>` : f.status === 'needs_text' ? `<span class="badge" title="Images and scanned PDFs have no text layer; the AI engine reads text only">No text</span>` : '<span class="badge badge-success">Indexed</span>'}
               <button class="btn btn-xs btn-ghost" data-view="${f.id}" title="View text">${icon('eye')}</button><button class="btn btn-xs btn-ghost" data-del="${f.id}" title="Delete">${icon('trash-2')}</button></div>`).join('') : '<p class="small muted" style="padding:14px 0">No files in this collection yet.</p>'}
           </div></div>
         </div></div>` : `<div class="card">${emptyState('folder', 'Create your first knowledge source', 'Collections like “Pricing” or “Customer Support” let you control exactly what each employee can read.', `<div class="row wrap" style="justify-content:center">${DEFAULT_COLLECTIONS.map((n) => `<button class="btn btn-sm" data-quick="${esc(n)}">${icon('plus')} ${esc(n)}</button>`).join('')}</div>`)}</div>`}`;
@@ -66,7 +65,7 @@ export default async function files(ctx) {
           rec.status = 'indexed';
         } else rec.status = IMAGE_TYPES.includes(rec.type) || parsed.meta?.scanned ? 'needs_text' : 'indexed';
         await app.db.put('files', rec);
-        toast(`${f.name}: ${rec.status === 'indexed' ? `indexed (${rec.chunks} chunks)` : 'stored — use “Extract with AI” to read its text'}`, 'success');
+        toast(`${f.name}: ${rec.status === 'indexed' ? `indexed (${rec.chunks} chunks)` : 'stored, but it has no text the AI engine can read'}`, 'success');
       } catch (e) {
         rec.status = 'error';
         rec.error = e.message;
@@ -105,21 +104,6 @@ export default async function files(ctx) {
       const f = list.find((x) => x.id === b.dataset.view);
       const chunks = (await app.db.byIndex('chunks', 'fileId', f.id)).sort((a, c) => a.index - c.index);
       drawer({ title: f.name, subtitle: `${chunks.length} chunks · extracted text`, body: `${f.dataUrl ? `<img src="${f.dataUrl}" alt="" style="max-width:100%;border-radius:10px;margin-bottom:12px">` : ''}${chunks.length ? `<pre class="light" style="max-height:none">${esc(chunks.map((c) => c.text).join('\n\n'))}</pre>` : '<p class="muted small">No text extracted.</p>'}` });
-    });
-    page.querySelectorAll('[data-ai]').forEach((b) => b.onclick = async () => {
-      const f = list.find((x) => x.id === b.dataset.ai);
-      if (!f.dataUrl) return toast('Only images can be read with AI here. For scanned PDFs, export pages as images.', 'error');
-      if (!(await app.aiReady())) return toast('Configure the AI engine first', 'error');
-      b.disabled = true;
-      b.innerHTML = '<span class="spinner sm"></span> Reading…';
-      try {
-        const text = await describeImage(await app.getAI(), f.dataUrl, 'Transcribe all text in this image exactly, then briefly describe any charts, tables or visual information relevant to a business.');
-        f.chunks = await storeText(app, f, text);
-        f.chars = text.length;
-        f.status = 'indexed';
-        await app.db.put('files', f);
-        toast(`${f.name} indexed`, 'success');
-      } catch (e) { toast(e.message, 'error'); b.disabled = false; }
     });
   }
 

@@ -1,7 +1,7 @@
 // Employee generation pipeline. Each stage reports real progress; stages that
 // need reasoning call the AI engine, the rest compile and validate locally.
 import { chatJSON } from './ai.js';
-import { catalogForPrompt, allSystems, SYSTEM_SCOPES } from './catalog.js';
+import { catalogForPrompt, allSystems, SYSTEM_SCOPES, TOOLS } from './catalog.js';
 import { normalizeEmployee, validateEmployee, workflowLayout, connectionRows } from './employee.js';
 import { addMemory } from './memory.js';
 
@@ -74,8 +74,46 @@ Return JSON:
   "metrics": [{"key": "snake_case", "label": "Human label"}],
   "triggers": ["when this employee should run (on demand, every N minutes, daily at HH:MM, inside a browser tab)"]
 }`;
-  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, maxTokens: 6000 });
+  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, maxTokens: 1500 });
   return data;
+}
+
+// JSON schema the engine's constrained decoding enforces for the architecture,
+// so even small local models return a structurally valid employee.
+function architectureSchema(systemIds) {
+  const str = { type: 'string' };
+  const strs = { type: 'array', items: str };
+  const field = { type: 'object', properties: { name: str, type: str, description: str }, required: ['name', 'type', 'description'] };
+  const toolNames = TOOLS.filter((t) => t.system !== 'internal').map((t) => t.name);
+  return {
+    type: 'object',
+    properties: {
+      name: str, role: str, summary: str, instructions: str, goals: strs, rules: strs, entryScript: str,
+      scripts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: str, name: str, description: str, purpose: str, instructions: str, trigger: str,
+            systems: { type: 'array', items: { type: 'string', enum: systemIds } },
+            tools: { type: 'array', items: { type: 'string', enum: toolNames } },
+            inputs: { type: 'array', items: field }, outputs: { type: 'array', items: field },
+            conditions: strs, dependencies: strs,
+            next: { type: 'array', items: { type: 'object', properties: { script: str, condition: str }, required: ['script', 'condition'] } },
+            failure: { type: 'object', properties: { strategy: { type: 'string', enum: ['retry', 'escalate', 'skip', 'stop'] }, maxRetries: { type: 'integer' }, escalateTo: str }, required: ['strategy', 'maxRetries', 'escalateTo'] },
+            approval: { type: 'object', properties: { required: { type: 'boolean' }, reason: str }, required: ['required', 'reason'] },
+            estimatedMinutes: { type: 'integer' },
+          },
+          required: ['id', 'name', 'description', 'purpose', 'instructions', 'systems', 'tools', 'outputs', 'next', 'failure', 'approval', 'estimatedMinutes'],
+        },
+      },
+      triggers: { type: 'array', items: { type: 'object', properties: { type: { type: 'string', enum: ['manual', 'schedule', 'browser'] }, label: str, input: str, entryScript: str, schedule: { type: 'object', properties: { everyMinutes: { type: 'integer' }, dailyAt: str }, required: ['everyMinutes', 'dailyAt'] } }, required: ['type', 'label', 'input', 'entryScript', 'schedule'] } },
+      metrics: { type: 'array', items: { type: 'object', properties: { key: str, label: str }, required: ['key', 'label'] } },
+      escalation: { type: 'object', properties: { policy: str }, required: ['policy'] },
+      reporting: str,
+    },
+    required: ['name', 'role', 'summary', 'instructions', 'goals', 'rules', 'entryScript', 'scripts', 'triggers', 'metrics', 'escalation', 'reporting'],
+  };
 }
 
 export async function designArchitecture(ai, { request, business, analysis, form, connections = [] }) {
@@ -144,7 +182,7 @@ Return JSON:
   "escalation": {"policy": "when and how to involve a human"},
   "reporting": "what the employee reports and how often"
 }`;
-  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, maxTokens: 16000 });
+  const { data } = await chatJSON(ai, { system: ENGINE_SYSTEM, prompt, schema: architectureSchema(Object.keys(allSystems(conns))), maxTokens: 7000 });
   return data;
 }
 

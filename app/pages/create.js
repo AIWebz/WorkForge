@@ -79,7 +79,7 @@ async function createForm({ el, app, navigate, query }) {
       <div><h1>Create an AI employee</h1><p>Describe the job. The AI engine designs the scripts, decisions, memory and permissions; the employee then works in your systems through the browser, signed in as you.</p></div>
       <div class="row small" style="border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:var(--surface)">${icon('settings-2')} Expert mode <label class="toggle"><input type="checkbox" id="expert" aria-label="Expert mode"><span></span></label></div>
     </div>
-    ${aiReady ? '' : `<div class="callout warn mb-16">${icon('alert-triangle')}<div>The AI engine is not configured${app.vault.locked ? ' (vault locked)' : ''}. <a href="#/settings/ai">Add your AI provider key</a> to generate employees.</div></div>`}
+    ${aiReady ? '' : `<div class="callout warn mb-16">${icon('alert-triangle')}<div>This browser can't run the AI engine (it needs WebGPU). Open WorkForge in a recent Chrome, Edge or Brave on a computer with a GPU — <a href="#/settings/ai">details</a>.</div></div>`}
     <div class="grid-2" style="grid-template-columns: 1.15fr 1fr; align-items:start">
       <div class="card card-pad form-grid">
         <div class="form-row">

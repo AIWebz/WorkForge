@@ -70,7 +70,7 @@ export async function summarizeStats(ai, stats, { title = 'Workforce report', re
   const r = await chat(ai, {
     system: 'You are the WorkForge reporting engine. Write concise, factual executive summaries strictly from the data provided. Never invent numbers. Use short paragraphs and bullet points (markdown).',
     messages: [userMessage(ai, `Write the "${title}" summary.\n\n<stats>\n${JSON.stringify(stats, null, 1)}\n</stats>\n\n<recent_tasks>\n${JSON.stringify(recentTasks.slice(0, 25).map((t) => ({ title: t.title, employee: t.employeeName, status: t.status, result: t.result, error: t.error })), null, 1)}\n</recent_tasks>\n\nCover: overall output, per-employee performance, notable outcomes and failures, pending approvals, and 2–3 recommendations.`)],
-    maxTokens: 6000,
+    maxTokens: 1500,
   });
   return r.text;
 }

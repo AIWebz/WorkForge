@@ -15,7 +15,7 @@ export class Runtime extends Emitter {
   /**
    * @param {object} o
    * @param {import('./db.js').DB} o.db
-   * @param {() => Promise<object>} o.getAI  resolves the AI provider config (with key)
+   * @param {() => Promise<object>} o.getAI  resolves the local AI engine config ({ model, source })
    * @param {{execute:Function}} o.executor tool executor from tools.js
    * @param {() => Promise<object>} [o.getSettings]
    * @param {() => Promise<object>} [o.getBusiness] business profile { description, automate, systems }
@@ -186,7 +186,7 @@ export class Runtime extends Emitter {
     if (!task || !['queued', 'running'].includes(task.status)) return;
     const ai = await this.getAI();
     if (!isConfigured(ai)) {
-      await this.finishTask(task, 'failed', 'The AI engine is not configured (Settings → AI Engine) or the credential vault is locked.');
+      await this.finishTask(task, 'failed', 'No AI model is selected (Settings → AI Engine).');
       return;
     }
     const firstStart = !task.startedAt;
@@ -239,7 +239,7 @@ export class Runtime extends Emitter {
         system: await this.systemPrompt(employee, script),
         messages: task.current.messages,
         tools: this.toolDefs(employee, script),
-        maxTokens: 16000,
+        maxTokens: 1200,
         signal,
       });
       task.usage.input += resp.usage.input;
@@ -529,6 +529,6 @@ Stay inside your systems. Never type passwords, one-time codes or payment card d
 function compact(out) {
   if (out === undefined || out === null) return { ok: true };
   const s = typeof out === 'string' ? out : safeStringify(out);
-  if (s.length <= 16000) return out;
-  return { truncated: true, data: s.slice(0, 16000) };
+  if (s.length <= 7000) return out;
+  return { truncated: true, data: s.slice(0, 7000) };
 }

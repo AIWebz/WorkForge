@@ -69,7 +69,7 @@ ${instruction}
 </owner_instruction>
 
 Return JSON: {"reply":"short confirmation or answer addressed to the owner, describing exactly what changed","operations":[…]}`;
-  const { data } = await chatJSON(ai, { system, prompt, maxTokens: 10000 });
+  const { data } = await chatJSON(ai, { system, prompt, maxTokens: 3000 });
   return { reply: String(data.reply || ''), operations: Array.isArray(data.operations) ? data.operations : [] };
 }
 

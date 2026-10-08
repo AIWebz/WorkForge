@@ -1,5 +1,6 @@
 {
   "files": [
+    "ai-worker.js",
     "background.js",
     "bridge.js",
     "browser-tools.js",
@@ -7,6 +8,7 @@
     "core/catalog.js",
     "core/db.js",
     "core/employee.js",
+    "core/engine.js",
     "core/generator.js",
     "core/memory.js",
     "core/modifier.js",
@@ -52,6 +54,8 @@
     "pair.js",
     "sidepanel.css",
     "sidepanel.html",
-    "sidepanel.js"
+    "sidepanel.js",
+    "vendor/LICENSE-web-llm.txt",
+    "vendor/web-llm.js"
   ]
 }

@@ -123,10 +123,9 @@ async function sync(snap, origin) {
   for (const m of await db.all('memory')) if (!appIds.has(m.id) && m.createdAt < lastPullAt) await db.delete('memory', m.id);
   if (snap.memory?.length) await db.bulkPut('memory', snap.memory);
   await chrome.storage.local.set({ business: snap.business || null, settings: snap.settings || {}, appOrigin: origin, appUrl: snap.appUrl && snap.appUrl.startsWith(origin) ? snap.appUrl : `${origin}/`, lastSyncAt: Date.now() });
-  // The AI key is only included when the owner shares it; otherwise keep whatever
-  // was entered in the side panel. Nothing else secret is ever synced.
-  if (snap.ai) await chrome.storage.session.set({ ai: snap.ai });
-  await chrome.storage.session.remove('secrets').catch(() => {});
+  // Model choice for the local AI engine (not a secret). Self-hosted weights are fetched from the app's site.
+  if (snap.ai?.model) await chrome.storage.local.set({ ai: { model: snap.ai.model, source: snap.ai.source?.base ? { base: snap.ai.source.base } : {} } });
+  await chrome.storage.session.remove(['secrets', 'ai']).catch(() => {});
   return { ok: true, employees: snap.employees?.length || 0 };
 }
 

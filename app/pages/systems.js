@@ -209,7 +209,6 @@ export default async function systemsPage(ctx) {
 
   const render = async () => {
     if (!ctx.isCurrent()) return;
-    await bridge.detect();
     const [rows, employees, aiReady] = await Promise.all([app.getConnections(), app.db.all('employees'), app.aiReady()]);
     const all = allSystems(rows);
     const connected = rows.filter((r) => all[r.id]).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));

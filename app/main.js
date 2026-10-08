@@ -1,6 +1,5 @@
 // WorkForge SPA bootstrap: hash router, application shell and command palette.
 import { app, db, events, startBackground } from './state.js';
-import { vault } from './vault.js';
 import { bridge } from './bridge.js';
 import { esc, icon, refreshIcons, on, debounce, avatar, toast } from './ui.js';
 
@@ -144,7 +143,6 @@ function shellHtml() {
         <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="Menu">${icon('menu')}</button>
         <div class="crumbs grow" id="crumbs"></div>
         <button class="cmdk-trigger" id="cmdk-open" aria-label="Search and commands" title="Search and commands (${MOD_KEY})">${icon('search')}<span>Search or jump to…</span><kbd class="kbd">${MOD_KEY}</kbd></button>
-        <button class="icon-btn" id="vault-btn" title="Credential vault" hidden>${icon('lock')}</button>
         <a class="icon-btn" href="#/approvals" title="Approvals">${icon('bell')}<span class="pip" id="bell-pip" hidden></span></a>
         <a class="btn btn-primary btn-sm btn-create" href="#/create">${icon('plus')}<span>Create employee</span></a>
       </header>
@@ -205,33 +203,23 @@ async function refreshChrome() {
     wsName.title = desc;
   }
   const ai = await app.getAI();
-  const ready = await app.aiReady();
+  const gpu = await app.engine.gpuInfo();
+  const st = app.engine.status;
   const card = document.getElementById('engine-card');
   if (card) {
-    const aiCls = ready ? 'ok' : vault.locked ? 'warn' : 'err';
+    const label = !gpu.supported ? 'No WebGPU' : st.state === 'ready' ? 'Running' : st.state === 'loading' ? `Loading ${Math.round((st.progress || 0) * 100)}%` : st.state === 'error' ? 'Error' : 'On device';
+    const aiCls = !gpu.supported || st.state === 'error' ? 'err' : st.state === 'loading' ? 'warn' : 'ok';
     const extCls = bridge.paired ? 'ok' : bridge.available ? 'warn' : '';
-    card.innerHTML = `<div class="eng-row"><span class="section-title">AI engine</span><span class="status-label ${aiCls}"><span class="dot"></span>${ready ? 'Ready' : vault.locked ? 'Locked' : 'Not set'}</span></div>
-      <div class="eng-model ellipsis mt-4">${ready ? esc(ai.model) : vault.locked ? 'Unlock the vault to run employees' : 'Add your AI key in Settings'}</div>
+    card.innerHTML = `<div class="eng-row"><span class="section-title">AI engine</span><span class="status-label ${aiCls}"><span class="dot"></span>${esc(label)}</span></div>
+      <div class="eng-model ellipsis mt-4" title="${esc(ai.model)}">${gpu.supported ? esc(ai.model.replace(/-q4f(16|32)_1-MLC$/, '')) : 'Needs a WebGPU browser'}</div>
       <div class="eng-row mt-8"><span class="tiny muted">Extension</span><span class="status-label ${extCls}"><span class="dot"></span>${bridge.paired ? 'Connected' : bridge.available ? 'Not paired' : 'Not installed'}</span></div>`;
-    card.onclick = () => navigate(ready ? '/extension' : '/settings/ai');
+    card.onclick = () => navigate('/settings/ai');
     card.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.onclick(); } };
     card.style.cursor = 'pointer';
-  }
-  const vb = document.getElementById('vault-btn');
-  if (vb) {
-    vb.hidden = vault.mode !== 'encrypted';
-    vb.innerHTML = icon(vault.locked ? 'lock' : 'unlock');
-    vb.title = vault.locked ? 'Unlock credential vault' : 'Lock credential vault';
   }
   refreshIcons();
 }
 
-async function toggleVault() {
-  if (vault.locked) {
-    const { unlockDialog } = await import('./pages/settings.js');
-    unlockDialog();
-  } else { vault.lock(); toast('Vault locked'); }
-}
 
 // ---------------------------------------------------------- command palette
 // Searches pages, employees, tasks and files, plus a few actions. Arrow keys
@@ -279,14 +267,9 @@ async function openPalette() {
       { icon: 'plus', label: 'Create employee', hint: 'action', run: () => navigate('/create'), text: 'create new employee generate hire' },
       { icon: 'app-window', label: 'Connect a system', hint: 'action', run: () => navigate('/systems'), text: 'connect add system web app integration' },
       { icon: 'puzzle', label: 'Set up the browser extension', hint: 'action', run: () => navigate('/extension'), text: 'install pair browser extension' },
-      { icon: 'key-round', label: 'AI engine settings', hint: 'action', run: () => navigate('/settings/ai'), text: 'ai key model provider engine settings' },
+      { icon: 'cpu', label: 'AI engine settings', hint: 'action', run: () => navigate('/settings/ai'), text: 'ai engine model gpu download settings' },
       { icon: 'briefcase', label: 'Edit business profile', hint: 'action', run: () => navigate('/settings/business'), text: 'business profile description workspace' },
     ];
-    if (vault.mode === 'encrypted') {
-      actions.push(vault.locked
-        ? { icon: 'unlock', label: 'Unlock vault', hint: 'action', run: toggleVault, text: 'unlock vault passphrase' }
-        : { icon: 'lock', label: 'Lock vault', hint: 'action', run: toggleVault, text: 'lock vault' });
-    }
     const pages = ALL_NAV.map(([p, ic, label, group]) => ({ icon: ic, label, hint: group.toLowerCase(), run: () => navigate(`/${p}`), text: `${label} ${p} ${group}` }));
     const empItems = state.data.emps.map((e) => ({ avatar: e, label: e.name, sub: e.role, hint: 'open employee', run: () => navigate(`/employees/${e.id}`), text: `${e.name} ${e.role || ''} ${e.summary || ''} open employee` }));
     const taskItems = state.data.tasks.map((t) => ({ icon: 'list-checks', label: t.title || 'Untitled task', hint: (t.status || '').replace(/_/g, ' '), run: () => navigate(`/tasks/${t.id}`), text: `${t.title || ''} ${t.input || ''} ${t.status || ''}` }));
@@ -345,7 +328,6 @@ function bindShell() {
   on(root, 'click', '#menu-toggle', () => document.querySelector('.shell').classList.toggle('nav-open'));
   on(root, 'click', '[data-nav]', (e, el) => navigate(el.dataset.nav));
   on(root, 'click', '#cmdk-open', () => openPalette());
-  on(root, 'click', '#vault-btn', toggleVault);
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
       if (!document.querySelector('.shell')) return;
@@ -372,13 +354,9 @@ async function boot() {
   window.addEventListener('hashchange', () => { route().then(refreshChrome); });
   db.on(debounce((e) => { if (['approvals', 'employees', 'settings'].includes(e.store)) refreshChrome(); }, 250));
   events.on(() => refreshChrome());
-  vault.onChange(() => refreshChrome());
+  app.engine.onStatus(debounce(() => refreshChrome(), 400));
   await route();
   refreshChrome();
-  if (vault.mode === 'encrypted' && vault.locked && location.hash.length > 2 && !location.hash.startsWith('#/onboarding')) {
-    const { unlockDialog } = await import('./pages/settings.js');
-    unlockDialog();
-  }
 }
 
 boot();

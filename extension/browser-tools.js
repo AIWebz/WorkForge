@@ -96,7 +96,7 @@ function readPage() {
     };
     const items = [];
     document.querySelectorAll('a[href], button, input, textarea, select, [role=button], [role=link], [role=tab], [role=menuitem], [contenteditable=true]').forEach((el) => {
-      if (items.length >= 160 || !visible(el)) return;
+      if (items.length >= 70 || !visible(el)) return;
       let ref = el.getAttribute('data-wf-ref');
       if (!ref) {
         window.__wfRefSeq = (window.__wfRefSeq || 0) + 1;
@@ -106,7 +106,7 @@ function readPage() {
       const tag = el.tagName.toLowerCase();
       const type = (el.getAttribute('type') || el.getAttribute('role') || '').toLowerCase();
       const forLabel = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText : '';
-      const label = (el.getAttribute('aria-label') || forLabel || el.innerText || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 90);
+      const label = (el.getAttribute('aria-label') || forLabel || el.innerText || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 70);
       const item = { ref, tag, label };
       if (type) item.type = type;
       if (tag === 'a') item.href = String(el.href).slice(0, 200);
@@ -115,7 +115,7 @@ function readPage() {
       if (tag === 'select') item.options = [...el.options].slice(0, 25).map((o) => o.text.trim());
       items.push(item);
     });
-    const text = (document.body?.innerText || '').replace(/\n{3,}/g, '\n\n').slice(0, 14000);
+    const text = (document.body?.innerText || '').replace(/\n{3,}/g, '\n\n').slice(0, 4000);
     return { url: location.href, title: document.title, text, elements: items, scroll: { y: Math.round(scrollY), height: document.documentElement.scrollHeight, viewport: innerHeight } };
   } catch (e) { return { __error: e.message }; }
 }

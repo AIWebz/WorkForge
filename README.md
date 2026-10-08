@@ -2,93 +2,84 @@
 
 **Describe the employee. WorkForge builds the entire system.**
 
-WorkForge is a static web app plus a browser extension. You describe the AI employee your business needs. The AI engine then generates that employee's architecture (scripts, decision logic, tools, memory, permissions and triggers) and runs it against your real systems and browser tabs. Human approval gates and a full audit log cover every action.
+WorkForge turns a plain-language description of a job into an AI employee and runs it. Each employee is a set of generated scripts, decision logic, memory and permissions. It works inside the web apps you already use (Gmail, HubSpot, Zendesk, Salesforce, Notion…) through the WorkForge browser extension, signed in as you.
 
-It runs entirely from a GitHub repository. There is no server, no build step, no Node/npm/Python, and no third-party hosting.
+- **No APIs, no AI provider, no keys.** The AI engine is an open-source language model that runs on your own computer's GPU, inside the browser (WebGPU via the bundled WebLLM). It designs every employee and executes every script step.
+- **No server, no build step.** A static site plus a Chrome extension, hosted entirely on GitHub Pages. Pages can also serve the model weights.
+- **No credentials stored.** Connecting a system only records its address. Employees use your own signed-in browser session, and every click and form entry waits for your approval by default.
 
 ---
 
 ## Run it
 
-**GitHub Pages (recommended)**
+**GitHub Pages**
 1. Push this repository to GitHub.
-2. Go to **Settings → Pages** and pick one of these:
-   - **Source: GitHub Actions**. The included workflow (`.github/workflows/pages.yml`) deploys on every push to `main`.
-   - **Source: Deploy from a branch** (`main` / root). This works too; `.nojekyll` is included.
+2. In **Settings → Pages**, choose **Source: GitHub Actions**. `.github/workflows/pages.yml` deploys on every push to `main`. (Deploy from a branch also works; `.nojekyll` is included.)
 3. Open `https://<user>.github.io/<repo>/`.
 
-**Locally:** serve the folder with any static file server, e.g. `python3 -m http.server`, then open `http://localhost:8000`. ES modules don't load from `file://`.
+**Locally:** run `python3 -m http.server` in the repo and open `http://localhost:8000`.
+
+**Requirements:** a WebGPU browser (recent Chrome, Edge or Brave) on a computer with a GPU. Each model option lists the GPU memory it needs. On GPUs without 16-bit shader support, WorkForge automatically uses the 32-bit build.
+
+### Self-host the model (optional)
+By default the model weights download once from the public open-model mirror (Hugging Face) and are cached by the browser. To serve them from your own GitHub Pages site instead:
+
+1. Go to **Settings → Secrets and variables → Actions → Variables** and add `WORKFORGE_MODEL`, for example `Qwen2.5-1.5B-Instruct-q4f16_1-MLC`. Several ids can be comma-separated.
+2. Re-run the Pages workflow. `.github/scripts/fetch-model.mjs` downloads the weights into `models/` during the deploy and lists them in `models/manifest.json`.
+3. In the app, open **Settings → AI Engine** and choose **Download the model from: This site**.
+
+GitHub Pages sites are limited to about 1 GB, so pick a small model to self-host.
 
 ## First steps
-
-1. **Settings → AI Engine.** Choose a provider and paste your API key. Claude (Anthropic) is the default; OpenAI or any OpenAI-compatible endpoint also works (OpenRouter, Groq, or a local Ollama with `OLLAMA_ORIGINS` set). Click **Test connection**.
-2. **Create Employee.** Describe the work and click **Generate Employee**. Review the result and click **Deploy**.
-3. **Integrations.** Connect the systems the employee uses.
-4. **Files.** Upload knowledge, then grant collections on the employee's Files tab.
-5. **Run task** from the employee's profile, enable a schedule, or start it in a browser tab with the extension.
+1. **Onboarding:** describe what your business does and what to automate, then pick your systems. You're never asked for a company name.
+2. **Settings → AI Engine:** choose a model and click **Load & test**. The first load downloads it.
+3. **Systems:** connect the web apps employees work in. Apps like Salesforce, Zendesk, Jira and monday.com ask for your address; nothing else is stored.
+4. **Browser Extension:** install it and click **Connect extension**.
+5. **Create Employee:** describe the work, generate, review and deploy. Then run a task from the profile, a schedule, or the extension side panel.
 
 ---
 
 ## How it works
 
 ```
-Request → AI engine (analysis) → AI engine (architecture) → normalize + validate → Employee
-Task → Script → AI engine turn → tool calls → permission check → (approval?) → execute
-     → structured result → AI engine evaluation (choose next script) → … → END
+Request → AI engine (analysis) → AI engine (architecture, schema-constrained) → validate → Employee
+Task → Script → AI engine turn → tool call → permission check → (approval?) → execute in the browser tab
+     → result → AI engine evaluation → next script → … → END
 ```
 
 | Area | Implementation |
 | --- | --- |
-| AI engine | `extension/core/ai.js`: direct browser calls to the provider with your key. Claude uses the `anthropic-dangerous-direct-browser-access` header and server-side refusal fallbacks on supported models. |
-| Generation | `extension/core/generator.js`: two real model calls (requirement analysis, architecture design), then local compile steps: decision logic, memory seeding, least-privilege permissions, tool binding, and a validation suite. The progress screen reflects these real stages. |
-| Script runtime | `extension/core/runtime.js`: runs one script at a time with only that script's permitted tools. Each script ends with a structured `complete_script` call; the engine validates the chosen transition against the workflow graph and applies failure strategies (retry / escalate / skip / stop). State is persisted after every step, so tasks survive reloads, and side-effecting calls are never silently repeated. |
-| Tools | `extension/core/tools.js` + `catalog.js`: real HTTP calls to Gmail, Calendar, Drive, Sheets, Slack, HubSpot, Salesforce, Shopify, Notion, Zendesk, PostgREST databases, custom REST APIs, webhooks, web fetch, files, memory and browser actions. |
-| Permissions | Per system and scope, set to `allow`, `approval` or `deny`, and checked on every call. Outbound scopes (send / write / create / click / form input / navigate) start as approval-required. There's an optional workspace-wide "approve all outbound" switch. |
-| Approvals | Approval Center: approve, edit the arguments, reject with a note, or pause the employee. Escalations (`request_human_help`) take a written answer. |
-| Memory | Per-employee instructions, business, long-term, task, conversation, system and execution memory, plus granted file knowledge. Retrieval is BM25 (`extension/core/memory.js`). |
-| Files | PDF, DOCX, XLSX/XLS, CSV, TXT, Markdown, JSON and HTML are parsed in the browser. Images can be transcribed by the AI engine on request. |
-| Natural-language control | Employee **Chat** and the workflow editor send your instruction to the AI engine, which returns structured operations (`extension/core/modifier.js`). They're applied to the stored architecture, each change is versioned, and **Undo** restores the previous version. |
-| Reports | Computed from task, script, approval and metric records. The AI writes summaries only from that data. |
-| Storage | IndexedDB in your browser; changes sync live across tabs. **Settings → Data** exports and imports backups (credentials are never included). |
+| AI engine | `extension/core/engine.js` + `ai.js`. WebLLM runs in a web worker. Each turn the model must return `{thought, tool, args}`, and grammar-guided decoding enforces a JSON schema built from the offered tools, so even small models produce valid tool calls. |
+| Generation | `extension/core/generator.js`. A requirements-analysis step, then an architecture step whose output is constrained to the employee schema. Local steps then compile the decision logic, memory, least-privilege permissions and validation checks. |
+| Script runtime | `extension/core/runtime.js`. Runs one script at a time with only that script's tools, applies retry / escalate / skip / stop failure strategies, persists state after each step, and never silently repeats a side effect after a reload. |
+| Systems | `extension/core/catalog.js`. A catalog of 28 web apps with real logos (`assets/img/systems/`, CC0 — see `LICENSE.md` there) plus custom web apps. |
+| Browser tools | `browser_open`, `read_page`, `extract`, `scroll`, `wait`, `navigate`, `click` and `fill`, executed by the extension in the working tab (`extension/browser-tools.js`). Password fields are off-limits. |
+| Permissions | Per system: read / navigate / click / type, each set to allow, approval or deny. Click and type start as approval-required. Navigation is limited to the employee's systems plus read-only "other websites". |
+| Approvals | Approval Center and the extension side panel: approve, edit the arguments, reject with a note, or pause the employee. Escalations take a written answer. |
+| Memory & files | Per-employee memory with BM25 retrieval. PDF, DOCX, XLSX, CSV, Markdown, JSON and HTML are parsed in the browser. |
+| Natural-language control | Chat and the workflow editor turn instructions into versioned architecture changes with undo. |
+| Reports | Computed from real task, script, approval and metric records. The AI writes summaries only from that data. |
 
 ### Browser extension (`extension/`)
+A Manifest V3 extension (Chromium 116+) that imports the same `extension/core` modules as the app and runs its own copy of the on-device AI engine.
 
-A Manifest V3 extension (Chromium 116+) that runs the **same `extension/core` modules** as the app; the web app imports them from that folder.
+- **Install:** use **Download extension (.zip)** on the Browser Extension page (or this repo's `extension/` folder). Then open `chrome://extensions`, turn on Developer mode and click **Load unpacked**.
+- **Connect:** click *Connect extension* in the app and approve the pairing window. Only paired app origins are served.
+- **Work:** open the side panel, choose an employee, then choose an open tab or "Open Gmail in a new tab", and click **Start Working**. Chrome asks for access to those sites only. Approvals appear inline, and results sync back to the app's Activity.
 
-- **Install:** use the **Browser Extension** page's *Download extension (.zip)* button, or this repo's `extension/` folder. Then open `chrome://extensions`, turn on Developer mode, and click **Load unpacked**.
-- **Connect:** on the Browser Extension page, click *Connect extension* and approve the pairing window. Only origins you pair are served.
-- **Work in a tab:** open the side panel, then choose an employee, choose a tab, and click **Start Working**. Chrome asks for access to that one site. Approvals appear inline in the panel, and results sync back to the app's Activity.
-- **Relay:** HubSpot, Notion, Shopify and Zendesk block browser requests (CORS), so the paired extension relays those API calls.
-- **Safety:** the extension never reads or types into password fields, limits navigation to the working site plus domains you allow, and checks each action against the employee's browser scopes.
-- **Custom domain:** the bridge activates automatically on `*.github.io` and `localhost`. For other domains, add your app's address in the side panel under ⚙ Settings.
+## Limitations (static hosting)
+- **Browser must stay open.** Schedules and follow-ups run while WorkForge is open in a tab; tasks started from the extension run while its side panel is open.
+- **No inbound webhooks.** Without a server, other apps can't push events in. Use schedules that check your inbox or CRM instead.
+- **Model quality depends on your GPU.** Small local models handle well-defined, step-by-step work best. Choose a bigger model when you have the GPU memory.
+- **The extension has its own model copy.** It caches the model separately from the app, so it downloads once more there.
 
----
-
-## Security model
-
-- **No secrets in the repository.** API keys and tokens live in a local credential vault: session-only (default), AES-GCM encrypted with a passphrase, or device storage.
-- Credentials are sent only to the provider or system they belong to. A strict Content-Security-Policy allows scripts only from this site and Google Identity Services.
-- **Employee isolation:** each employee reads only its own memory and the collections you grant.
-- Model-facing prompts treat tool output (emails, web pages, documents) as untrusted data, not instructions.
-- Every task, script, tool call (with input and output), decision, error and approval is written to the audit log.
-
-## Honest limitations of static hosting
-
-- **No always-on server.** Schedules and follow-ups run while WorkForge is open in a browser tab (one tab is elected leader). Browser-tab tasks run while the side panel is open.
-- **Inbound webhooks** (services pushing events to WorkForge) are impossible without a server. Use schedules that poll instead, e.g. "check Gmail every 15 minutes".
-- **Google access tokens** from browser OAuth last about an hour; reconnect when they expire. You need your own OAuth Client ID, with your Pages URL as an authorized JavaScript origin.
-- **Your AI provider bills your account.** Use a key with spend limits.
-
-## Repository layout
-
+## Layout
 ```
 index.html               SPA entry (hash router)
-app/                     UI: shell, pages, vault, bridge, file parsing, Google OAuth
+app/                     UI shell, pages, extension bridge, file parsing, engine worker
 assets/css/app.css       Design system
-assets/vendor/           Vendored libraries (lucide, pdf.js, mammoth, SheetJS, JSZip) + licenses
-extension/               Chrome extension (Load unpacked)
-extension/core/          Shared engine: AI, catalog, employee model, generator, runtime, tools, memory, modifier, reports, DB
-.github/workflows/       GitHub Pages deployment
+assets/img/              Logo and system logos
+assets/vendor/           Bundled libraries (WebLLM, lucide, pdf.js, mammoth, SheetJS, JSZip) + licenses
+extension/               Chrome extension (Load unpacked); extension/core = shared engine
+.github/                 Pages deploy + optional model self-hosting
 ```
-
-If you add files to `extension/`, the Pages workflow regenerates `extension/files.json`, which the in-browser ZIP builder uses. If you deploy from a branch instead, update `files.json` by hand.

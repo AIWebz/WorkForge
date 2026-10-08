@@ -5,7 +5,7 @@ import { syncExtension } from '../state.js';
 const STEPS = [
   ['download', 'Install the WorkForge extension', 'Download the extension package below (or use the <code>extension/</code> folder of this repository), unzip it, open <code>chrome://extensions</code>, enable <strong>Developer mode</strong> and click <strong>Load unpacked</strong>.'],
   ['pin', 'Pin it to the browser', 'Click the puzzle icon in the toolbar and pin <strong>WorkForge</strong> so it is one click away.'],
-  ['link', 'Connect it to this workspace', 'Click <strong>Connect extension</strong> on this page and approve the request. Your employees, knowledge and (optionally) credentials sync to the extension.'],
+  ['link', 'Connect it to this workspace', 'Click <strong>Connect extension</strong> on this page and approve the request. Your employees, knowledge, systems and AI model choice sync to the extension — nothing secret.'],
   ['globe', 'Open a website', 'Go to the site where the work happens — LinkedIn, Salesforce, Google Sheets, your admin panel…'],
   ['users', 'Select an AI employee', 'Open the WorkForge side panel and choose which employee should work there. Only employees with browser access are available.'],
   ['play', 'Select the tab and start', 'Choose the browser tab, describe the job, approve site access, and click <strong>Start Working</strong>.'],

@@ -1,11 +1,13 @@
 // WorkForge side panel: choose an employee, choose where they work (an open tab
 // or one of their systems in a new tab), start working. Runs the same core
 // runtime as the web app; browser tools act in the task's working tab inside the
-// user's own signed-in browser. The only network call is to the AI engine.
+// user's own signed-in browser. The AI engine is a local open-source model
+// running on this device's GPU — no API, no key.
 import { DB } from './core/db.js';
 import { Runtime, TERMINAL } from './core/runtime.js';
 import { createToolExecutor } from './core/tools.js';
-import { PROVIDERS, isConfigured } from './core/ai.js';
+import { isConfigured, setEngineHost, testEngine } from './core/ai.js';
+import { createEngineHost, MODELS, DEFAULT_MODEL, modelInfo } from './core/engine.js';
 import { SYSTEMS, SCOPE_LABELS, SYSTEM_SCOPES, allSystems, systemUrl, systemOrigins, systemForUrl, hostOf } from './core/catalog.js';
 import { uid, now } from './core/util.js';
 import { runBrowserAction, openWorkingTab } from './browser-tools.js';
@@ -18,7 +20,16 @@ const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minu
 const statusClass = { completed: 'ok', running: 'run', queued: 'run', waiting_approval: 'warn', failed: 'err', needs_attention: 'err', cancelled: '', paused: 'warn' };
 const LEVEL_TEXT = { allow: 'allowed', approval: 'needs approval', deny: 'blocked' };
 
-async function getAI() { return (await chrome.storage.session.get('ai')).ai || {}; }
+// Local AI engine for the side panel (its own copy; the model is cached per browser profile).
+const engine = createEngineHost({ webllmUrl: chrome.runtime.getURL('vendor/web-llm.js'), workerUrl: chrome.runtime.getURL('ai-worker.js') });
+setEngineHost(engine);
+engine.onStatus(() => renderStatus());
+
+// Model choice is synced from the app (or picked here); stored in local storage — it is not a secret.
+async function getAI() {
+  const { ai } = await chrome.storage.local.get('ai');
+  return { model: ai?.model || DEFAULT_MODEL, source: ai?.source?.base ? { base: ai.source.base } : {} };
+}
 const getConnections = () => db.all('connections');
 
 const executor = createToolExecutor({
@@ -69,8 +80,11 @@ function originPattern(url) {
 async function renderStatus() {
   const ai = await getAI();
   const { lastSyncAt, appOrigin, appUrl } = await chrome.storage.local.get(['lastSyncAt', 'appOrigin', 'appUrl']);
-  const ready = isConfigured(ai);
-  statusEl.innerHTML = `<span><span class="dot" style="background:${ready ? 'var(--ok)' : 'var(--warn)'}"></span>${ready ? `AI engine · ${esc(ai.model)}` : 'AI engine not set up'}</span>
+  const gpu = await engine.gpuInfo();
+  const st = engine.status;
+  const ready = gpu.supported && isConfigured(ai);
+  const label = !gpu.supported ? 'AI engine needs WebGPU' : st.state === 'loading' ? `Loading model ${Math.round((st.progress || 0) * 100)}%` : st.state === 'ready' ? `AI engine running · ${esc(modelInfo(ai.model).label)}` : st.state === 'error' ? `AI engine error: ${esc(st.text)}` : `AI engine on device · ${esc(modelInfo(ai.model).label)}`;
+  statusEl.innerHTML = `<span><span class="dot" style="background:${ready && st.state !== 'error' ? 'var(--ok)' : 'var(--warn)'}"></span>${label}</span>
     <span>${lastSyncAt ? `Synced ${new Date(lastSyncAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Not synced'}${appOrigin ? ` · <a href="#" id="open-app">open app</a>` : ''}</span>`;
   statusEl.querySelector('#open-app')?.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: `${appUrl || `${appOrigin}/`}#/dashboard` }); });
 }
@@ -79,6 +93,7 @@ async function renderStatus() {
 async function renderHome() {
   const employees = (await db.all('employees')).sort((a, b) => a.name.localeCompare(b.name));
   const ai = await getAI();
+  const gpuOk = (await engine.gpuInfo()).supported;
   if (!employees.length) {
     view.innerHTML = `<div class="card empty"><h2>No employees yet</h2><p class="small">Open your WorkForge app → <strong>Browser Extension</strong> → <strong>Connect extension</strong>. Your employees sync here automatically.</p></div>`;
     return;
@@ -122,10 +137,10 @@ async function renderHome() {
     return `<div class="row tiny" style="gap:6px;align-items:center;margin-top:4px">${sysLogo(id, systems, 14)}<span><strong>${esc(systems[id].name)}</strong> — ${SYSTEM_SCOPES.map((s) => `${esc(SCOPE_LABELS[s])}: ${esc(LEVEL_TEXT[p[s]] || 'blocked')}`).join(' · ')}</span></div>`;
   }).join('');
 
-  const canStart = !!state.target && isConfigured(ai) && emp?.status !== 'paused';
+  const canStart = !!state.target && gpuOk && isConfigured(ai) && emp?.status !== 'paused';
 
   view.innerHTML = `
-    ${isConfigured(ai) ? '' : `<div class="callout warn">The AI engine isn't set up in the extension. In the app, turn on sharing the AI key with the extension (Settings) and it syncs here — or enter it in ⚙ Settings.</div>`}
+    ${gpuOk ? '' : `<div class="callout warn">This browser can't run the AI engine (WebGPU is not available). Use a recent Chrome, Edge or Brave on a computer with a GPU.</div>`}
     <div class="card"><div class="step-label">Step 1</div><h2>Which employee should work?</h2>
       ${employees.map((e) => {
         const ids = employeeSystems(e, systems);
@@ -287,7 +302,7 @@ async function renderSettings() {
   const required = new Set(chrome.runtime.getManifest().host_permissions);
   const optional = (perms.origins || []).filter((o) => !required.has(o));
   const webAll = optional.includes('https://*/*');
-  const provider = PROVIDERS[ai?.provider] ? ai.provider : 'anthropic';
+  const gpu = await engine.gpuInfo();
   view.innerHTML = `<div class="card"><h2>Connected WorkForge apps</h2>
       ${pairedOrigins.length ? pairedOrigins.map((o) => `<div class="between small" style="padding:4px 0"><span class="ellipsis">${esc(o)}</span><button class="btn sm danger" data-unpair="${esc(o)}">Remove</button></div>`).join('') : '<p class="small muted">None. Open your WorkForge app → Browser Extension → Connect extension.</p>'}
       <label class="field">Add WorkForge app address (custom domain)<input id="custom" placeholder="https://workforge.example.com"></label>
@@ -300,12 +315,9 @@ async function renderSettings() {
       <div class="between" style="margin-top:8px"><span class="small">Allow any https site</span><button class="btn sm" id="web-all">${webAll ? 'Disable' : 'Allow'}</button></div>
     </div>
     <div class="card"><h2>AI engine</h2>
-      <p class="small muted">${isConfigured(ai) ? `Using ${esc(PROVIDERS[ai.provider]?.label || ai.provider)} · ${esc(ai.model)} (synced from the app or entered here). Kept in session storage — cleared when the browser closes.` : 'Not set up. Turn on sharing the AI key with the extension in the app’s Settings and it syncs here, or enter it below.'}</p>
-      <label class="field">Provider<select id="ai-provider">${Object.entries(PROVIDERS).map(([k, p]) => `<option value="${k}" ${k === provider ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></label>
-      <label class="field">Model<input id="ai-model" value="${esc(ai?.model || PROVIDERS[provider].defaultModel)}"></label>
-      <label class="field">Base URL (OpenAI-compatible only)<input id="ai-base" value="${esc(ai?.baseUrl || '')}"></label>
-      <label class="field">Provider key<input id="ai-key" type="password" placeholder="${ai?.apiKey ? '•••• saved' : ''}"></label>
-      <button class="btn sm primary" id="ai-save" style="margin-top:8px">Save for this session</button>
+      <p class="small muted">${gpu.supported ? `An open-source model runs on this computer's GPU — no API, no key. It downloads once${ai.source.base ? ' from your WorkForge site' : ''} and is cached by this browser.` : esc(gpu.reason)}</p>
+      <label class="field">Model<select id="ai-model">${MODELS.map((m) => `<option value="${esc(m.id)}" ${m.id === ai.model ? 'selected' : ''}>${esc(m.label)} — ${esc(m.note)}</option>`).join('')}</select></label>
+      <div class="row" style="margin-top:8px"><button class="btn sm primary" id="ai-save">Save</button><button class="btn sm" id="ai-load" ${gpu.supported ? '' : 'disabled'}>Load &amp; test</button><span class="tiny muted" id="ai-msg"></span></div>
     </div>`;
   view.querySelectorAll('[data-unpair]').forEach((b) => b.onclick = async () => {
     await chrome.storage.local.set({ pairedOrigins: pairedOrigins.filter((o) => o !== b.dataset.unpair) });
@@ -326,12 +338,22 @@ async function renderSettings() {
     renderSettings();
   };
   view.querySelector('#ai-save').onclick = async () => {
-    const cur = await getAI();
-    const p = view.querySelector('#ai-provider').value;
-    const next = { provider: p, model: view.querySelector('#ai-model').value.trim(), baseUrl: p === 'anthropic' ? '' : view.querySelector('#ai-base').value.trim(), effort: cur.effort || '', apiKey: view.querySelector('#ai-key').value.trim() || cur.apiKey || '' };
-    await chrome.storage.session.set({ ai: next });
+    const { ai: cur } = await chrome.storage.local.get('ai');
+    await chrome.storage.local.set({ ai: { ...(cur || {}), model: view.querySelector('#ai-model').value } });
     renderStatus();
     renderSettings();
+  };
+  view.querySelector('#ai-load').onclick = async (e) => {
+    const btn = e.currentTarget;
+    const msg = view.querySelector('#ai-msg');
+    btn.disabled = true;
+    msg.textContent = 'Loading — the first time downloads the model…';
+    try {
+      const { ai: cur } = await chrome.storage.local.get('ai');
+      await chrome.storage.local.set({ ai: { ...(cur || {}), model: view.querySelector('#ai-model').value } });
+      const r = await testEngine(await getAI());
+      msg.textContent = r.ok ? 'Running on this device' : `Model answered: ${r.text}`;
+    } catch (err) { msg.textContent = err.message; } finally { btn.disabled = false; }
   };
 }
 

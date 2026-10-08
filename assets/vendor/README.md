@@ -10,3 +10,4 @@ Loaded on demand (only lucide loads on every page).
 | mammoth.browser.min.js | mammoth 1.6.0 | BSD-2-Clause — licenses/mammoth.txt |
 | xlsx.full.min.js | xlsx (SheetJS CE) 0.18.5 | Apache-2.0 — licenses/sheetjs.txt |
 | jszip.min.js | jszip 3.10.1 | MIT or GPLv3 — licenses/jszip.md |
+| web-llm.js | @mlc-ai/web-llm 0.2.85 — local in-browser LLM engine (WebGPU) | Apache-2.0 — licenses/web-llm.txt |

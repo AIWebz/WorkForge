@@ -1,18 +1,18 @@
-// Application context: database, AI key vault, AI engine config, runtime,
-// tool executor, scheduler and extension sync — the single source of truth the
-// pages render from.
+// Application context: database, local AI engine, runtime, tool executor,
+// scheduler and extension sync — the single source of truth the pages render from.
 //
-// There are no third-party API calls here. The only network traffic the app
-// makes is to the user's AI provider (the AI engine). Employees work inside
-// systems (web apps) through the WorkForge browser extension, in browser tabs
-// that use the owner's own signed-in session.
+// There are no API calls and no credentials. The AI engine is an open-source
+// model running on this device (WebGPU); the only downloads are its weights,
+// once. Employees work inside systems (web apps) through the WorkForge browser
+// extension, in browser tabs that use the owner's own signed-in session.
 import { DB } from '../extension/core/db.js';
 import { Runtime } from '../extension/core/runtime.js';
 import { createToolExecutor } from '../extension/core/tools.js';
 import { SYSTEMS, hostOf } from '../extension/core/catalog.js';
 import { scheduleNext } from '../extension/core/employee.js';
 import { Emitter, uid, now } from '../extension/core/util.js';
-import { vault } from './vault.js';
+import { setEngineHost } from '../extension/core/ai.js';
+import { createEngineHost, DEFAULT_MODEL } from '../extension/core/engine.js';
 import { bridge } from './bridge.js';
 import { toast } from './ui.js';
 
@@ -21,40 +21,56 @@ export const events = new Emitter();
 
 export const EXTENSION_REQUIRED = 'Install and connect the WorkForge browser extension so employees can work in your systems.';
 
+// Local AI engine (runs in a web worker on this device's GPU).
+export const engine = createEngineHost({
+  webllmUrl: new URL('../assets/vendor/web-llm.js', import.meta.url).href,
+  workerUrl: new URL('./ai-worker.js', import.meta.url),
+});
+setEngineHost(engine);
+
+// Directory URL of this site, e.g. https://you.github.io/WorkForge/
+export const siteBase = () => new URL('.', location.href.split('#')[0]).href;
+
 export const app = {
-  db, vault, bridge, events,
+  db, bridge, events, engine,
   jobs: {},
   isLeader: false,
-  settings: { approveAllOutbound: false, shareAiKeyWithExtension: true },
+  settings: { approveAllOutbound: false },
   business: null,
 
   async load() {
     await db.open();
     const stored = await db.getSetting('security', {});
-    const { shareCredentialsWithExtension, ...rest } = stored || {};
-    this.settings = { approveAllOutbound: false, shareAiKeyWithExtension: true, ...rest };
-    if (rest.shareAiKeyWithExtension === undefined && shareCredentialsWithExtension !== undefined) {
-      this.settings.shareAiKeyWithExtension = !!shareCredentialsWithExtension;
-    }
-    if (shareCredentialsWithExtension !== undefined) await db.setSetting('security', this.settings);
+    this.settings = { approveAllOutbound: !!stored?.approveAllOutbound };
     this.business = await migrateBusiness(await db.getSetting('business', null));
     await migrateConnections();
   },
 
+  /** AI engine config: { model, source: { base? } }. base = this site when the model is self-hosted. */
   async getAI() {
     const cfg = await db.getSetting('ai', {});
-    return { ...cfg, apiKey: vault.get('ai.apiKey') || '' };
+    const model = cfg.model || DEFAULT_MODEL;
+    return { model, source: cfg.source === 'site' ? { base: siteBase() } : {}, sourceName: cfg.source === 'site' ? 'site' : 'mirror' };
   },
 
-  async saveAI(cfg, apiKey) {
-    await db.setSetting('ai', { provider: cfg.provider, model: cfg.model, baseUrl: cfg.baseUrl || '', effort: cfg.effort || '' });
-    if (apiKey !== undefined) await vault.set('ai.apiKey', apiKey);
+  async saveAI({ model, source }) {
+    await db.setSetting('ai', { model, source: source === 'site' ? 'site' : 'mirror' });
     events.emit({ type: 'ai' });
   },
 
+  /** Ready = a model is chosen and this browser can run it (WebGPU). It downloads on first use. */
   async aiReady() {
-    const c = await this.getAI();
-    return !!(c.provider && c.model && (c.provider === 'compatible' ? c.baseUrl : c.apiKey));
+    const info = await engine.gpuInfo();
+    return info.supported && !!(await this.getAI()).model;
+  },
+
+  /** Models published by this site's GitHub Pages workflow (models/manifest.json), if any. */
+  async hostedModels() {
+    try {
+      const r = await fetch(`${siteBase()}models/manifest.json`, { cache: 'no-store' });
+      if (!r.ok) return [];
+      return (await r.json()).models || [];
+    } catch { return []; }
   },
 
   /** Connected systems: rows of the `connections` store ({ id, url?, custom?, name?, description?, addedAt }). */
@@ -93,7 +109,7 @@ async function migrateBusiness(b) {
 }
 
 // Older versions stored API connections ({ status, config, account } + tokens in the
-// vault). A system is now connected iff a row exists; keep only what maps to a system.
+// old vault). A system is now connected iff a row exists; keep only what maps to a system.
 async function migrateConnections() {
   const rows = await db.all('connections');
   const legacy = rows.filter((r) => 'config' in r || 'status' in r || 'lastTest' in r);
@@ -158,7 +174,7 @@ runtime.on((evt) => {
 
 // ---------------------------------------------------------------- scheduler
 async function schedulerTick() {
-  if (!app.isLeader || vault.locked) return;
+  if (!app.isLeader) return;
   const t = now();
   for (const emp of await db.all('employees')) {
     if (emp.status !== 'active') continue;
@@ -195,10 +211,7 @@ export function startBackground() {
     navigator.locks.request('workforge-leader', () => { becomeLeader(); return new Promise(() => {}); });
   } else becomeLeader();
   setInterval(schedulerTick, 20000);
-  vault.onChange(() => {
-    if (!vault.locked && app.isLeader) runtime.recover();
-    if (bridge.paired) syncExtension().catch(() => {});
-  });
+  events.on((e) => { if (e.type === 'ai' && bridge.paired) syncExtension().catch(() => {}); });
 
   bridge.detect().then(() => { if (bridge.paired) syncExtension().catch(() => {}); });
   bridge.on(() => { events.emit({ type: 'bridge' }); if (bridge.paired) syncExtension().catch(() => {}); });
@@ -217,7 +230,7 @@ export function startBackground() {
 }
 
 // ---------------------------------------------------------------- extension sync
-// Nothing secret is synced except the AI key, and only when the owner allows it.
+// Nothing secret exists to sync: employees, knowledge, systems and the AI model choice.
 export async function syncExtension() {
   if (!bridge.paired) throw new Error('Extension not connected');
   const [employees, memory, collections, files, connections] = await Promise.all([
@@ -233,10 +246,8 @@ export async function syncExtension() {
     appUrl: location.origin + location.pathname,
     syncedAt: now(),
   };
-  if (app.settings.shareAiKeyWithExtension && !vault.locked) {
-    const ai = await app.getAI();
-    if (ai.provider && ai.model) snapshot.ai = ai;
-  }
+  // The extension runs its own copy of the local engine with the same model choice.
+  snapshot.ai = await app.getAI();
   const r = await bridge.sync(snapshot);
   await pullFromExtension();
   return r;
