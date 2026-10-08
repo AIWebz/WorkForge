@@ -1,10 +1,37 @@
 // Browser tool implementations executed in the employee's working tab via
 // chrome.scripting. Used by both the side panel runtime and the background
-// worker (for tasks started from the web app).
+// worker (for tasks started from the web app). Everything runs in the user's own
+// signed-in browser session; nothing here calls a third-party API.
+
+export class BrowserError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
 
 export async function hasHostAccess(url) {
   const origin = new URL(url).origin;
   return chrome.permissions.contains({ origins: [`${origin}/*`] });
+}
+
+function noAccess(host, hint) {
+  return new BrowserError(`WorkForge has no access to ${host}. ${hint}`, 'no_host_permission');
+}
+
+/**
+ * Open a URL in a new working tab and wait for it to load.
+ * Requires host permission for the URL's origin (checked first; nothing is opened without it).
+ * @returns {Promise<{tabId:number, url:string, title:string}>}
+ */
+export async function openWorkingTab(url, { active = false } = {}) {
+  let u;
+  try { u = new URL(String(url || '')); } catch { throw new BrowserError(`Invalid address: ${url || '(empty)'}`, 'invalid_url'); }
+  if (!/^https?:$/.test(u.protocol)) throw new BrowserError('Employees can only open http(s) pages.', 'invalid_url');
+  if (!(await hasHostAccess(u.href))) throw noAccess(u.host, 'Allow this site in the WorkForge side panel (Start Working asks for it) or from the app\'s Systems page.');
+  const created = await chrome.tabs.create({ url: u.href, active: !!active });
+  await new Promise((res) => setTimeout(res, 300));
+  await waitForComplete(created.id, 20000);
+  let tab;
+  try { tab = await chrome.tabs.get(created.id); } catch { throw new BrowserError('The working tab was closed while loading.', 'tab_closed'); }
+  return { tabId: tab.id, url: tab.url || tab.pendingUrl || u.href, title: tab.title || u.host };
 }
 
 async function exec(tabId, func, args = []) {
@@ -26,9 +53,11 @@ function waitForComplete(tabId, timeout = 15000) {
 
 export async function runBrowserAction(tabId, action, args = {}) {
   let tab;
-  try { tab = await chrome.tabs.get(tabId); } catch { throw new Error('The working tab was closed.'); }
-  if (!/^https?:/.test(tab.url || '')) throw new Error('Employees can only work on http(s) pages.');
-  if (!(await hasHostAccess(tab.url))) throw new Error(`WorkForge has no access to ${new URL(tab.url).host}. Grant it from the WorkForge side panel (Start Working asks for it).`);
+  try { tab = await chrome.tabs.get(tabId); } catch { throw new BrowserError('The working tab was closed.', 'tab_closed'); }
+  if (!/^https?:/.test(tab.url || '')) throw new BrowserError('Employees can only work on http(s) pages.', 'invalid_url');
+  if (!(await hasHostAccess(tab.url))) {
+    throw noAccess(new URL(tab.url).host, 'If this is a sign-in page, sign in to the app in that tab yourself, then run the task again. Otherwise allow the site from the WorkForge side panel.');
+  }
 
   switch (action) {
     case 'read_page': return exec(tabId, readPage);
@@ -44,15 +73,15 @@ export async function runBrowserAction(tabId, action, args = {}) {
     case 'fill': return exec(tabId, fill, [String(args.ref || ''), String(args.value ?? '')]);
     case 'navigate': {
       const url = String(args.url || '');
-      if (!/^https?:\/\//.test(url)) throw new Error('Only http(s) URLs');
-      if (!(await hasHostAccess(url))) throw new Error(`WorkForge has no access to ${new URL(url).host}. Add the site in the side panel before navigating there.`);
+      if (!/^https?:\/\//.test(url)) throw new BrowserError('Only http(s) URLs can be opened.', 'invalid_url');
+      if (!(await hasHostAccess(url))) throw noAccess(new URL(url).host, 'Allow the site in the WorkForge side panel before navigating there.');
       await chrome.tabs.update(tabId, { url });
       await new Promise((res) => setTimeout(res, 400));
       await waitForComplete(tabId);
       const t = await chrome.tabs.get(tabId);
       return { url: t.url, title: t.title };
     }
-    default: throw new Error(`Unknown browser action ${action}`);
+    default: throw new BrowserError(`Unknown browser action ${action}`, 'unknown_action');
   }
 }
 

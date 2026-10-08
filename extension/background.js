@@ -1,8 +1,9 @@
 // WorkForge extension background worker: pairing, data sync with the web app,
-// API relay for services that block browser requests, and browser actions for
-// tasks started from the app. Only paired origins are served.
+// site-access checks, and working tabs / browser actions for tasks started from
+// the app. There is no API relay: employees work inside web apps in the user's
+// own signed-in browser. Only paired origins are served.
 import { DB } from './core/db.js';
-import { runBrowserAction } from './browser-tools.js';
+import { runBrowserAction, openWorkingTab } from './browser-tools.js';
 
 const db = new DB('workforge-ext');
 const VERSION = chrome.runtime.getManifest().version;
@@ -62,46 +63,70 @@ async function handleBridge({ type, payload = {} }, sender) {
       return tabs.filter((t) => /^https?:/.test(t.url || '') && !t.url.startsWith(origin)).map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId }));
     }
     case 'grantHosts': {
-      const origins = (payload.origins || []).filter((o) => /^https?:\/\//.test(o));
+      const origins = validOrigins(payload.origins);
       if (!origins.length) return { granted: true };
       if (await chrome.permissions.contains({ origins })) return { granted: true };
       await chrome.windows.create({ url: chrome.runtime.getURL(`pair.html?mode=grant&origins=${encodeURIComponent(JSON.stringify(origins))}`), type: 'popup', width: 460, height: 520 });
       return { granted: false, pending: true };
     }
-    case 'fetch': return relayFetch(payload);
+    case 'checkHosts': {
+      const granted = {};
+      for (const o of Array.isArray(payload.origins) ? payload.origins : []) {
+        const key = String(o);
+        const pat = toPattern(key);
+        granted[key] = false;
+        if (!pat) continue;
+        try { granted[key] = await chrome.permissions.contains({ origins: [pat] }); } catch { granted[key] = false; }
+      }
+      return { granted };
+    }
+    case 'openTab': {
+      let u;
+      try { u = new URL(String(payload.url || '')); } catch { throw new BridgeError('Invalid address for the working tab.', 'invalid_url'); }
+      if (!/^https?:$/.test(u.protocol)) throw new BridgeError('Only http(s) pages can be opened.', 'invalid_url');
+      if (!(await chrome.permissions.contains({ origins: [`${u.origin}/*`] }))) {
+        throw new BridgeError(`The extension has no access to ${u.host}. Allow it from the app's Systems page or the WorkForge side panel.`, 'no_host_permission');
+      }
+      return openWorkingTab(u.href, { active: !!payload.active });
+    }
     case 'browser': return runBrowserAction(Number(payload.tabId), payload.action, payload.args || {});
     default: throw new BridgeError(`Unknown request ${type}`);
   }
 }
 
-async function relayFetch({ url, method = 'GET', headers = {}, body }) {
-  let u;
-  try { u = new URL(url); } catch { throw new BridgeError('Invalid URL'); }
-  if (!/^https?:$/.test(u.protocol)) throw new BridgeError('Only http(s) requests can be relayed');
-  if (!(await chrome.permissions.contains({ origins: [`${u.origin}/*`] }))) {
-    throw new BridgeError(`The extension has no permission for ${u.host}. Open the WorkForge side panel → Settings → “Allow web access” or grant this site.`, 'no_host_permission');
-  }
-  const res = await fetch(url, { method, headers, body: method === 'GET' || method === 'HEAD' ? undefined : body, credentials: 'omit' });
-  const text = await res.text();
-  return { status: res.status, body: text.slice(0, 2_000_000), headers: Object.fromEntries([...res.headers].filter(([k]) => ['content-type', 'retry-after'].includes(k))) };
+// Host permission patterns the extension may request ("https://host/*", "https://*.host/*").
+// A bare origin or URL ("https://host") is turned into its "https://host/*" pattern.
+function toPattern(o) {
+  const s = String(o || '').trim();
+  if (s === 'https://*/*' || s === 'http://*/*') return s;
+  if (/^https?:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?\/\*$/i.test(s)) return s;
+  try { const u = new URL(s); if (/^https?:$/.test(u.protocol)) return `${u.origin}/*`; } catch { /* invalid */ }
+  return '';
+}
+function validOrigins(list) {
+  return [...new Set((Array.isArray(list) ? list : []).map(toPattern).filter(Boolean))];
 }
 
 async function sync(snap, origin) {
   const { lastPullAt = 0 } = await chrome.storage.local.get('lastPullAt');
-  // Replace configuration stores with the app's snapshot.
-  for (const store of ['employees', 'collections', 'files', 'chunks', 'connections']) {
+  // Replace configuration stores with the app's snapshot. Connections carry only
+  // which systems are connected and their addresses — strip anything else.
+  const connections = (snap.connections || []).filter((c) => c?.id)
+    .map(({ id, url, custom, name, description, addedAt }) => JSON.parse(JSON.stringify({ id, url, custom, name, description, addedAt })));
+  const stores = { employees: snap.employees, collections: snap.collections, files: snap.files, chunks: snap.chunks, connections };
+  for (const [store, rows] of Object.entries(stores)) {
     await db.clear(store);
-    if (snap[store]?.length) await db.bulkPut(store, snap[store]);
+    if (rows?.length) await db.bulkPut(store, rows);
   }
   // Memory: upsert the app's copy; drop local items the app has already pulled but no longer has.
   const appIds = new Set((snap.memory || []).map((m) => m.id));
   for (const m of await db.all('memory')) if (!appIds.has(m.id) && m.createdAt < lastPullAt) await db.delete('memory', m.id);
   if (snap.memory?.length) await db.bulkPut('memory', snap.memory);
   await chrome.storage.local.set({ business: snap.business || null, settings: snap.settings || {}, appOrigin: origin, appUrl: snap.appUrl && snap.appUrl.startsWith(origin) ? snap.appUrl : `${origin}/`, lastSyncAt: Date.now() });
-  const session = {};
-  if (snap.ai) session.ai = snap.ai;
-  session.secrets = snap.secrets || {};
-  await chrome.storage.session.set(session);
+  // The AI key is only included when the owner shares it; otherwise keep whatever
+  // was entered in the side panel. Nothing else secret is ever synced.
+  if (snap.ai) await chrome.storage.session.set({ ai: snap.ai });
+  await chrome.storage.session.remove('secrets').catch(() => {});
   return { ok: true, employees: snap.employees?.length || 0 };
 }
 
