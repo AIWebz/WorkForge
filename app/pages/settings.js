@@ -78,7 +78,7 @@ export function bindEngineStatus(root, rerender) {
   });
   q('#ai-prepare')?.addEventListener('click', async (e) => {
     e.currentTarget.disabled = true;
-    try { await app.prepareEngine(); toast('AI engine is running on this device', 'success'); } catch (err) { toast(err.message, 'error'); }
+    try { await app.prepareEngine(); toast('AI engine is running on this device', 'success'); } catch (err) { if (err.code !== 'stopped') toast(err.message, 'error'); }
   });
   q('#ai-delete')?.addEventListener('click', async () => {
     if (!(await confirmDialog('Remove the downloaded model from this browser? It downloads again automatically the next time an employee runs.', { confirm: 'Remove', danger: true }))) return;

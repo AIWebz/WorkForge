@@ -93,15 +93,30 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
     };
   }
 
+  // Bumped by unload(): loads and generations started before it are abandoned.
+  // (The WebLLM client only settles through worker messages, so a terminated or
+  // failed worker would otherwise leave its promises pending forever.)
+  let gen = 0;
+  const stoppers = new Set();
+  const stopped = () => Object.assign(new Error('The AI engine was stopped'), { code: 'stopped' });
+  function stoppable(promise, w) {
+    return new Promise((resolve, reject) => {
+      const stop = () => reject(stopped());
+      stoppers.add(stop);
+      w?.addEventListener('error', (e) => reject(new Error(e.message || 'The AI engine could not start in this browser')), { once: true });
+      promise.then(resolve, reject).finally(() => stoppers.delete(stop));
+    });
+  }
+
   async function loadModel(webllm, id, cfg) {
     set({ state: 'loading', model: id, progress: 0, text: 'Starting the AI engine…' });
     if (worker) { try { worker.terminate(); } catch { /* ignore */ } }
     engine = null;
-    worker = new Worker(workerUrl, { type: 'module' });
-    return webllm.CreateWebWorkerMLCEngine(worker, id, {
+    const w = (worker = new Worker(workerUrl, { type: 'module' }));
+    return stoppable(webllm.CreateWebWorkerMLCEngine(w, id, {
       appConfig: appConfigFor(webllm, cfg),
       initProgressCallback: (r) => set({ state: 'loading', progress: r.progress ?? 0, text: r.text || 'Loading…' }),
-    }, { context_window_size: contextWindow });
+    }, { context_window_size: contextWindow }), w);
   }
 
   /** Returns a ready engine, choosing and loading the model automatically. */
@@ -109,34 +124,42 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
     const base = cfg.source?.base || '';
     if (engine && loadedKey.endsWith(`|${base}`)) return engine;
     if (loading) return loading;
-    loading = (async () => {
+    const my = gen;
+    const p = (async () => {
       const webllm = await lib();
       const ids = await candidates(cfg);
       let lastErr = null;
       for (const id of ids) {
+        if (my !== gen) throw stopped();
         try {
-          engine = await loadModel(webllm, id, cfg);
+          const e = await loadModel(webllm, id, cfg);
+          if (my !== gen) throw stopped();
+          engine = e;
           loadedKey = `${id}|${base}`;
           set({ state: 'ready', progress: 1, text: 'Ready on this device', model: id });
           return engine;
         } catch (err) {
+          if (my !== gen) throw stopped();
           lastErr = asError(err);
           // Too big for this GPU: skip it from now on. Network errors are retried next time.
           if (ids.indexOf(id) < ids.length - 1 && OUT_OF_MEMORY.test(lastErr.message)) store.add(id);
         }
       }
+      // Free the GPU memory a half-loaded model may still hold.
+      if (worker) { try { worker.terminate(); } catch { /* ignore */ } worker = null; }
       throw lastErr || new Error('The AI engine could not start');
     })().catch((err) => {
       const e = asError(err);
-      set({ state: 'error', text: e.message });
+      if (my === gen) set({ state: 'error', text: e.message });
       throw e;
-    }).finally(() => { loading = null; });
-    return loading;
+    }).finally(() => { if (loading === p) loading = null; });
+    loading = p;
+    return p;
   }
 
   // The engine handles one generation at a time; serialize callers.
   function run(fn) {
-    const p = queue.then(fn, fn);
+    const p = queue.then(() => stoppable(Promise.resolve().then(fn)));
     queue = p.catch(() => {});
     return p;
   }
@@ -155,7 +178,10 @@ export function createEngineHost({ webllmUrl, workerUrl, contextWindow = CONTEXT
   }
 
   async function unload() {
-    try { if (engine) await engine.unload(); } catch { /* ignore */ }
+    gen++;
+    loading = null;
+    for (const stop of [...stoppers]) stop();
+    try { if (engine) await Promise.race([engine.unload(), new Promise((r) => setTimeout(r, 3000))]); } catch { /* ignore */ }
     if (worker) { try { worker.terminate(); } catch { /* ignore */ } }
     engine = null;
     worker = null;
