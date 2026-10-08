@@ -3,28 +3,52 @@
   "name": "WorkForge — AI Employees",
   "short_name": "WorkForge",
   "version": "1.0.0",
-  "description": "Let your WorkForge AI employees work inside the browser tabs you choose, within the permissions you grant.",
+  "description": "Lets your WorkForge AI employees work inside the web apps you use, in your own signed-in browser, within the permissions you grant.",
   "minimum_chrome_version": "116",
-  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
-  "action": { "default_title": "WorkForge", "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" } },
-  "background": { "service_worker": "background.js", "type": "module" },
-  "side_panel": { "default_path": "sidepanel.html" },
-  "permissions": ["storage", "tabs", "scripting", "sidePanel"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "WorkForge",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "sidePanel"
+  ],
   "host_permissions": [
     "https://api.anthropic.com/*",
-    "https://api.openai.com/*",
-    "https://slack.com/*",
-    "https://api.hubapi.com/*",
-    "https://*.salesforce.com/*",
-    "https://*.myshopify.com/*",
-    "https://api.notion.com/*",
-    "https://*.zendesk.com/*"
+    "https://api.openai.com/*"
   ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://*.github.io/*", "http://localhost/*", "http://127.0.0.1/*"],
-      "js": ["bridge.js"],
+      "matches": [
+        "https://*.github.io/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
       "run_at": "document_start"
     }
   ],
