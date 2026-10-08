@@ -168,13 +168,13 @@ export async function runTaskDialog(app, employee, { input = '' } = {}) {
 
 // ------------------------------------------------------------ Overview
 async function overview({ host, app, employee }) {
-  const [tasks, versions] = await Promise.all([app.db.byIndex('tasks', 'employeeId', employee.id), app.db.byIndex('versions', 'employeeId', employee.id)]);
+  const [tasks, versions, conns] = await Promise.all([app.db.byIndex('tasks', 'employeeId', employee.id), app.db.byIndex('versions', 'employeeId', employee.id), app.getConnections()]);
   tasks.sort((a, b) => b.createdAt - a.createdAt);
   const live = tasks.find((t) => ['running', 'waiting_approval', 'queued'].includes(t.status));
   const tests = employee.tests;
   host.innerHTML = `<div class="grid-2" style="grid-template-columns: 1.35fr 1fr; align-items:start">
     <div class="col gap-16">
-      ${live ? liveTaskCard(employee, live) : ''}
+      ${live ? liveTaskCard(employee, live, conns) : ''}
       <div class="card card-pad col">
         <h3>About</h3><p class="small">${esc(employee.summary)}</p>
         ${employee.request ? `<details><summary class="small muted" style="cursor:pointer">Original request</summary><pre class="light mt-8">${esc(employee.request)}</pre></details>` : ''}
@@ -206,7 +206,7 @@ async function overview({ host, app, employee }) {
   host.querySelector('#first-run')?.addEventListener('click', () => runTaskDialog(app, employee));
   host.querySelector('#revalidate').onclick = async () => {
     const e = clone(employee);
-    e.tests = validateEmployee(e, { connections: await app.connectionMap(), collections: await app.db.all('collections') });
+    e.tests = validateEmployee(e, { connections: await app.getConnections(), collections: await app.db.all('collections') });
     await app.db.put('employees', e);
     toast(e.tests.passed ? `Checks passed (${e.tests.warnings} warnings)` : 'Some checks failed', e.tests.passed ? 'success' : 'error');
   };
@@ -250,19 +250,21 @@ async function overview({ host, app, employee }) {
   });
 }
 
-function liveTaskCard(employee, task) {
+function liveTaskCard(employee, task, conns = []) {
   const current = task.current ? employee.scripts.find((s) => s.id === task.current.scriptId) : null;
+  const tabSys = task.browser?.url ? systemForUrl(task.browser.url, conns) : null;
   return `<div class="card card-pad" style="border-color:#c7d2fe">
     <div class="between"><div><div class="tiny muted">Current task</div><a class="strong" href="#/tasks/${task.id}">${esc(task.title)}</a></div>${statusBadge(task.status)}</div>
     <div class="steps-mini mt-12">
       ${task.scriptRuns.map((r) => `<div class="s"><span class="${r.status === 'success' ? 's-ok' : 's-err'}">${icon(r.status === 'success' ? 'check' : 'x')}</span>${esc(r.name)} <span class="muted ellipsis">— ${esc(truncate(r.summary, 90))}</span></div>`).join('')}
       ${current ? `<div class="s ${task.status === 'waiting_approval' ? 's-wait' : 's-run'}">${icon(task.status === 'waiting_approval' ? 'pause-circle' : 'loader')}<strong>${esc(current.name)}</strong> ${task.status === 'waiting_approval' ? '<a href="#/approvals">— waiting for approval</a>' : ''}</div>` : ''}
-    </div></div>`;
+    </div>
+    ${task.browser?.url ? `<div class="row gap-6 tiny muted mt-8">${tabSys ? sysIcon(tabSys, true, systemName(tabSys, conns)) : sysIcon('browser', true)}<span>Working tab${tabSys ? ` in ${esc(systemName(tabSys, conns))}` : ''}:</span><span class="ellipsis mono">${esc(truncate(task.browser.url, 90))}</span></div>` : ''}</div>`;
 }
 
 // ------------------------------------------------------------ Chat
 async function chat({ host, app, employee, reload }) {
-  const SUGGEST = ['Add a three-day follow-up for leads that don’t reply.', 'Don’t allow this employee to send emails without approval.', 'Use the pricing document when answering customers.', 'Add a Slack notification after every qualified lead.', 'What does this employee do when a script fails?'];
+  const SUGGEST = ['Add a three-day follow-up for leads that don’t reply.', 'Always ask me before clicking Send in Gmail.', 'Use the pricing document when answering customers.', 'Post a Slack message after every qualified lead.', 'What does this employee do when a script fails?'];
   host.innerHTML = `<div class="card chat">
     <div class="card-head"><div><h3>${icon('message-square')} Instruct ${esc(employee.name)}</h3><div class="tiny muted">The AI engine turns your instructions into real configuration changes (versioned), answers questions, or starts tasks.</div></div><button class="btn btn-sm" id="undo">${icon('undo-2')} Undo last change</button></div>
     <div class="chat-log" id="log"></div>
@@ -290,7 +292,7 @@ async function chat({ host, app, employee, reload }) {
     log.scrollTop = log.scrollHeight;
     try {
       const current = await reload();
-      const r = await modifyEmployee({ db: app.db, ai: await app.getAI(), employee: current, instruction: text, history, collections: await app.db.all('collections'), connections: await app.connectionMap() });
+      const r = await modifyEmployee({ db: app.db, ai: await app.getAI(), employee: current, instruction: text, history, collections: await app.db.all('collections'), connections: await app.getConnections() });
       await addMemory(app.db, employee.id, 'conversation', r.reply || (r.changed ? 'Done.' : 'No changes were needed.'), { role: 'ai', source: 'chat', results: r.results.map(({ op, ok, message }) => ({ op, ok, message })) });
       for (const t of r.runTasks) {
         const emp = await reload();
@@ -318,6 +320,16 @@ async function chat({ host, app, employee, reload }) {
 // ------------------------------------------------------------ Scripts
 async function scripts({ host, app, employee }) {
   const byId = Object.fromEntries(employee.scripts.map((s) => [s.id, s]));
+  const conns = await app.getConnections();
+  const granted = new Set(employeeSystemIds(employee, conns));
+  const scriptPerms = (s) => {
+    const rows = (s.systems || []).map((sys) => `<div class="row wrap gap-6">${sysIcon(sys, true, systemName(sys, conns))}<span class="strong">${esc(systemName(sys, conns))}</span>${granted.has(sys)
+      ? SYSTEM_SCOPES.map((sc) => `<span class="muted">${SCOPE_LABELS[sc]}</span>${lvlTag(scopeLevel(employee, sys, sc, { script: s, settings: app.settings }))}`).join('<span class="muted">·</span>')
+      : '<span class="small strong lvl-deny">No access — grant it under Permissions</span>'}</div>`);
+    if (s.tools.some((t) => TOOL_MAP[t]?.system === 'files')) rows.push(`<div class="row gap-6">${sysIcon('files', true)}<span class="strong">Knowledge files</span><span class="muted">Read</span>${lvlTag(filesLevel(employee))}</div>`);
+    if (s.tools.some((t) => TOOL_MAP[t]?.system === 'browser') && !(s.systems || []).length) rows.push(`<div class="row gap-6">${sysIcon('browser', true)}<span class="muted">${domainsOf(employee).length ? `Other websites only (${esc(domainsOf(employee).join(', '))}) — read and navigate` : 'No systems selected — browser tools will be blocked'}</span></div>`);
+    return rows.join('') || '—';
+  };
   host.innerHTML = `<div class="between mb-16"><p class="muted small">${employee.scripts.length} generated scripts. The AI engine executes one script at a time and chooses the next from its transitions.</p><button class="btn btn-primary btn-sm" id="add">${icon('plus')} Add script</button></div>
   <div class="col gap-16">${employee.scripts.map((s, i) => `<div class="script-card">
     <div class="between"><div class="row"><span class="num">${i + 1}</span><div><div class="strong">${esc(s.name)} ${s.id === employee.entryScript ? '<span class="badge badge-primary">entry</span>' : ''} ${s.approval.required ? '<span class="badge badge-warning">approval required</span>' : ''}</div><div class="tiny muted mono">${esc(s.id)}</div></div></div><button class="btn btn-sm" data-edit="${s.id}">${icon('pencil')} Edit</button></div>
@@ -328,8 +340,9 @@ async function scripts({ host, app, employee }) {
       <dt>Inputs</dt><dd>${s.inputs.map((f) => `<span class="tag">${esc(f.name)}: ${esc(f.type)}</span>`).join('') || '—'}</dd>
       <dt>Outputs</dt><dd>${s.outputs.map((f) => `<span class="tag">${esc(f.name)}: ${esc(f.type)}</span>`).join('') || '—'}</dd>
       <dt>Conditions</dt><dd>${s.conditions.map(esc).join('<br>') || '—'}</dd>
+      <dt>Systems</dt><dd>${(s.systems || []).length ? `<div class="row wrap gap-6">${s.systems.map((sys) => `<span class="chip">${sysIcon(sys, true, systemName(sys, conns))}${esc(systemName(sys, conns))}</span>`).join('')}</div>` : '<span class="muted">none</span>'}</dd>
       <dt>Tools</dt><dd>${s.tools.map((t) => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted">internal only</span>'}</dd>
-      <dt>Permissions</dt><dd>${[...new Set(s.tools.map((t) => { const tool = TOOL_MAP[t]; const lvl = evaluatePermission(employee, t, { method: 'GET' }, { script: s, settings: app.settings }).level; return `${SYSTEMS[tool.system]?.name || tool.system} ${tool.scope}: <span class="lvl-${lvl}">${lvl}</span>`; }))].join(' · ') || '—'}</dd>
+      <dt>Permissions</dt><dd><div class="col gap-6 small">${scriptPerms(s)}</div></dd>
       <dt>Dependencies</dt><dd>${s.dependencies.map((d) => esc(byId[d]?.name || d)).join(', ') || '—'}</dd>
       <dt>Next scripts</dt><dd>${s.next.map((n) => `${esc(byId[n.script]?.name || n.script)}${n.condition ? ` <span class="muted">(${esc(n.condition)})</span>` : ''}`).join('<br>') || '<span class="badge badge-success">END</span>'}</dd>
       <dt>On failure</dt><dd>${esc(s.failure.strategy)}${s.failure.strategy === 'retry' ? ` ×${s.failure.maxRetries}` : ''}${s.failure.escalateTo ? ` → ${esc(byId[s.failure.escalateTo]?.name || s.failure.escalateTo)}` : ''}</dd>
@@ -343,12 +356,12 @@ async function scripts({ host, app, employee }) {
 
 // ------------------------------------------------------------ Workflows
 async function workflows({ host, app, employee }) {
-  const tasks = await app.db.byIndex('tasks', 'employeeId', employee.id);
+  const [tasks, conns] = await Promise.all([app.db.byIndex('tasks', 'employeeId', employee.id), app.getConnections()]);
   const live = tasks.find((t) => t.status === 'running' || t.status === 'waiting_approval');
   host.innerHTML = `<div class="card card-pad mb-16"><div class="row">${icon('sparkles')}<input class="input grow" id="ai-mod" placeholder="Ask the AI engine to change this workflow — e.g. “Add another follow-up after three days”"><button class="btn btn-primary" id="ai-go">Apply</button></div><div class="small mt-8" id="ai-out"></div></div>
     <div class="between mb-8"><span class="small muted">Click a script to edit it. Dashed lines are loops; labels are the decision conditions the AI engine evaluates.${live ? ' The highlighted node is executing now.' : ''}</span><button class="btn btn-sm" id="add">${icon('plus')} Add script</button></div>
     <div id="wf"></div>`;
-  renderWorkflow(host.querySelector('#wf'), employee, { running: live?.current?.scriptId, onSelect: (id) => openScriptEditor(app, employee, id) });
+  renderWorkflow(host.querySelector('#wf'), employee, { running: live?.current?.scriptId, connections: conns, onSelect: (id) => openScriptEditor(app, employee, id) });
   host.querySelector('#add').onclick = () => openScriptEditor(app, employee, null);
   const go = async () => {
     const text = host.querySelector('#ai-mod').value.trim();
@@ -357,7 +370,7 @@ async function workflows({ host, app, employee }) {
     const out = host.querySelector('#ai-out');
     out.innerHTML = '<span class="spinner sm"></span> Modifying the architecture…';
     try {
-      const r = await modifyEmployee({ db: app.db, ai: await app.getAI(), employee, instruction: text, collections: await app.db.all('collections'), connections: await app.connectionMap(), actor: 'workflow editor' });
+      const r = await modifyEmployee({ db: app.db, ai: await app.getAI(), employee, instruction: text, collections: await app.db.all('collections'), connections: await app.getConnections(), actor: 'workflow editor' });
       for (const t of r.runTasks) await app.runtime.createTask(r.employee, { input: t.input, entryScript: t.entryScript, trigger: 'workflow editor' });
       out.innerHTML = `${md(r.reply)}${r.results.map((x) => `<div class="${x.ok ? 's-ok' : 's-err'} small">${x.ok ? '✓' : '✕'} ${esc(x.message)}</div>`).join('')}`;
       await addMemory(app.db, employee.id, 'conversation', text, { role: 'user', source: 'workflow' });
@@ -402,17 +415,42 @@ async function memory({ host, app, employee }) {
 
 // ------------------------------------------------------------ Tools
 async function tools({ host, app, employee }) {
-  const conns = await app.connectionMap();
+  const conns = await app.getConnections();
+  const sysIds = employeeSystemIds(employee, conns);
+  const domains = domainsOf(employee);
   const used = new Set(employee.scripts.flatMap((s) => s.tools));
-  const list = TOOLS.filter((t) => used.has(t.name) || t.internal || (t.system === 'files' && employee.collections.length));
-  host.innerHTML = `<div class="card"><div class="table-wrap"><table class="log-table"><thead><tr><th>Tool</th><th>System</th><th>Scope</th><th>Permission</th><th>Used by</th><th>Connection</th></tr></thead><tbody>
+  const list = TOOLS.filter((t) => t.system === 'internal' || used.has(t.name)
+    || (t.system === 'files' && employee.collections.length)
+    || (t.system === 'browser' && (sysIds.length || domains.length)));
+  const kind = (t) => (t.system === 'internal' ? '<span class="small muted">Built-in</span>'
+    : `<div class="row gap-6 small">${sysIcon(t.system, true)}${t.system === 'files' ? 'Knowledge files' : 'Browser'}</div>`);
+  // Browser tools resolve the system from the working tab, so show the level in every system compactly.
+  const browserLevels = (t) => {
+    const cells = sysIds.map((sys) => `<span class="row gap-4" title="${esc(systemName(sys, conns))} · ${SCOPE_LABELS[t.scope]}">${sysIcon(sys, true, systemName(sys, conns))}${lvlTag(scopeLevel(employee, sys, t.scope, { settings: app.settings }))}</span>`);
+    if (domains.length && t.name !== 'browser_open') {
+      const lvl = ['read', 'navigate'].includes(t.scope) ? 'allow' : 'deny';
+      cells.push(`<span class="row gap-4" title="Other websites: ${esc(domains.join(', '))}">${sysIcon('browser', true)}${lvlTag(lvl)}</span>`);
+    }
+    return cells.length ? `<div class="row wrap gap-8">${cells.join('')}</div>` : lvlTag('deny');
+  };
+  const permission = (t) => {
+    if (t.system === 'internal') return lvlTag('allow', 'Always');
+    if (t.system === 'files') return lvlTag(filesLevel(employee));
+    return browserLevels(t);
+  };
+  const needs = (t) => {
+    if (t.system === 'browser') return statusBadge(bridge.paired ? 'connected' : 'disconnected', bridge.paired ? 'Extension paired' : 'Needs extension');
+    if (t.system === 'files') return `<span class="tiny muted">${employee.collections.length} collection(s)</span>`;
+    return '<span class="tiny muted">—</span>';
+  };
+  host.innerHTML = `<div class="card"><div class="card-head"><div><h3>Tools</h3><div class="tiny muted">What the AI engine may call for ${esc(employee.name)}. Browser tools act in the working tab, so their level depends on the system that tab is in.</div></div></div>
+    <div class="table-wrap"><table class="log-table"><thead><tr><th>Tool</th><th>Kind</th><th>Scope</th><th>Permission</th><th>Used by</th><th>Needs</th></tr></thead><tbody>
     ${list.map((t) => {
-    const lvl = t.internal ? 'allow' : evaluatePermission(employee, t.name, { method: 'GET' }, { settings: app.settings }).level;
-    const connId = SYSTEMS[t.system]?.connection;
     const by = employee.scripts.filter((s) => s.tools.includes(t.name)).map((s) => s.name);
-    return `<tr><td><div class="mono small strong">${t.name}</div><div class="tiny muted">${esc(t.description)}</div></td><td class="small">${t.internal ? 'Internal' : esc(SYSTEMS[t.system]?.name || t.system)}</td><td><span class="tag">${t.scopeFor ? 'read/write' : t.scope}</span></td><td><span class="small strong lvl-${lvl}">${lvl}</span></td><td class="small">${by.length ? by.map(esc).join(', ') : t.internal ? 'All scripts' : '—'}</td><td>${connId ? statusBadge(conns[connId]?.status === 'connected' ? 'connected' : 'disconnected') : t.system === 'browser' ? statusBadge(bridge.paired ? 'connected' : 'disconnected', bridge.paired ? 'Extension' : 'No extension') : '<span class="tiny muted">built-in</span>'}</td></tr>`;
+    return `<tr><td><div class="mono small strong">${t.name}</div><div class="tiny muted">${esc(t.description)}</div></td><td>${kind(t)}</td><td><span class="tag">${esc(SCOPE_LABELS[t.scope] || t.scope)}</span></td><td>${permission(t)}</td><td class="small">${by.length ? by.map(esc).join(', ') : t.system === 'internal' ? 'All scripts' : '—'}</td><td>${needs(t)}</td></tr>`;
   }).join('')}
-  </tbody></table></div></div>`;
+  </tbody></table></div>
+  <div class="card-body"><p class="help">Levels shown before script rules: a script that requires approval also pauses every allowed click and typing step.${app.settings?.approveAllOutbound ? ' The workspace setting “approve all outbound actions” is on, so allowed clicks and typing need approval everywhere.' : ''}</p></div></div>`;
 }
 
 // ------------------------------------------------------------ Files
@@ -433,74 +471,115 @@ async function files({ host, app, employee }) {
 
 // ------------------------------------------------------------ Systems
 async function systems({ host, app, employee }) {
-  const conns = await app.connectionMap();
-  const sys = Object.keys(employee.permissions).filter((s) => SYSTEMS[s]);
-  const { openConnectDialog } = await import('./systems.js');
-  host.innerHTML = sys.length ? `<div class="grid-2">${sys.map((s) => {
-    const connId = SYSTEMS[s].connection;
-    const c = connId ? conns[connId] : null;
-    const ok = connId ? c?.status === 'connected' : s === 'browser' || s === 'web' ? bridge.paired : true;
-    return `<div class="int-card"><div class="between"><div class="row">${sysIcon(s)}<div><div class="strong">${esc(SYSTEMS[s].name)}</div><div class="tiny muted">${Object.entries(employee.permissions[s]).map(([k, v]) => `${SCOPE_LABELS[k] || k}: ${v}`).join(' · ')}</div></div></div>${statusBadge(ok ? 'connected' : 'disconnected', ok ? (connId ? `Connected${c?.account ? ` · ${c.account}` : ''}` : s === 'files' ? 'Built-in' : 'Extension connected') : (s === 'browser' || s === 'web') ? 'Needs extension' : 'Not connected')}</div>
-      <p class="small muted">${esc(SYSTEMS[s].description)}</p>
-      ${!ok ? (connId ? `<button class="btn btn-sm" data-connect="${connId}">${icon('plug')} Connect ${esc(CONNECTIONS[connId].name)}</button>` : '<a class="btn btn-sm" href="#/extension">Set up extension</a>') : ''}</div>`;
-  }).join('')}</div>` : emptyState('server', 'No systems', 'This employee only uses internal tools.');
+  const conns = await app.getConnections();
+  const all = allSystems(conns);
+  const sysIds = employeeSystemIds(employee, conns);
+  const connById = Object.fromEntries(conns.map((c) => [c.id, c]));
+  // Live check of the extension's site access for each system (only when paired).
+  let access = null;
+  if (bridge.paired && typeof bridge.checkHosts === 'function' && sysIds.length) {
+    try { access = (await bridge.checkHosts([...new Set(sysIds.flatMap((id) => systemOrigins(id, conns)))]))?.granted || null; } catch { access = null; }
+  }
+  const hasAccess = (id) => { const o = systemOrigins(id, conns); return o.length > 0 && o.every((x) => access?.[x]); };
+  const usedBy = (id) => employee.scripts.filter((s) => (s.systems || []).includes(id)).map((s) => s.name);
+  const card = (id) => {
+    const sys = all[id];
+    const name = systemName(id, conns);
+    const conn = connById[id];
+    const url = systemUrl(id, conns);
+    const needsAddress = !!SYSTEMS[id]?.address && !conn?.url;
+    const by = usedBy(id);
+    return `<div class="int-card"><div class="between"><div class="row">${sysIcon(id, false, name)}<div><div class="strong">${esc(name)}</div><div class="tiny muted">${SYSTEM_SCOPES.map((sc) => `${SCOPE_LABELS[sc]} ${lvlTag(scopeLevel(employee, id, sc, { settings: app.settings }))}`).join(' · ')}</div></div></div>
+        ${conn ? statusBadge('connected') : statusBadge('disconnected', sys ? 'Not connected' : 'Removed')}</div>
+      <p class="small muted">${esc(sys?.description || 'This web app was removed from Systems.')}</p>
+      <div class="tiny muted">${needsAddress ? `<span class="s-wait">${icon('alert-triangle')} Needs your address (${esc(SYSTEMS[id].address.label)})</span>` : url ? `${icon('link')} <span class="mono">${esc(url)}</span>` : ''}</div>
+      ${by.length ? `<div class="tiny muted">Used by ${esc(by.join(', '))}</div>` : ''}
+      ${access ? `<div class="tiny">${hasAccess(id) ? `<span class="s-ok">${icon('check-circle-2')} Extension can open ${esc(name)}</span>` : `<span class="s-wait">${icon('lock')} Extension has no site access yet</span> <button class="link-btn" data-grant="${esc(id)}">Allow site access</button>`}</div>` : ''}
+      <div class="row wrap gap-6">
+        ${sys ? `<button class="btn btn-sm ${conn ? '' : 'btn-primary'}" data-connect="${esc(id)}">${icon(conn ? 'settings-2' : 'plug')} ${conn ? 'Edit connection' : 'Connect'}</button>` : ''}
+        ${url ? `<a class="btn btn-sm" href="${esc(url)}" target="_blank" rel="noopener">${icon('external-link')} Open</a>` : ''}
+      </div></div>`;
+  };
+  const domains = domainsOf(employee);
+  host.innerHTML = `${!bridge.paired && sysIds.length ? `<div class="callout warn mb-16">${icon('puzzle')}<div class="small">${esc(employee.name)} works in these systems through the WorkForge browser extension, signed in as you. <a href="#/extension">Install and pair the extension</a> before running tasks.</div></div>` : ''}
+    ${sysIds.length ? `<div class="grid-2">${sysIds.map(card).join('')}</div>` : emptyState('app-window', 'No systems', `${esc(employee.name)} doesn't work in any web app yet. Add one under Permissions, or select systems for a script.`, `<a class="btn" href="#/employees/${employee.id}/permissions">Open Permissions</a>`)}
+    <div class="card card-pad mt-16"><div class="between"><div class="row">${sysIcon('browser', true)}<h3>Other websites</h3></div><a class="small" href="#/employees/${employee.id}/permissions">Edit</a></div>
+      <p class="small muted mt-8">${domains.length ? `May read and navigate (never click or type): ${domains.map((d) => `<span class="tag">${esc(d)}</span>`).join(' ')}` : 'None. Outside its systems the employee cannot read or open other websites.'}</p></div>
+    <p class="help mt-16">Connecting a system stores only its address in this browser. No passwords, tokens or API keys: the employee uses your existing browser session, and you stay signed in yourself.</p>`;
   host.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
+  host.querySelectorAll('[data-grant]').forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await bridge.grantHosts(systemOrigins(b.dataset.grant, conns));
+      if (r?.granted) { toast(`The extension can now open ${systemName(b.dataset.grant, conns)}`, 'success'); systems({ host, app, employee }).then(refreshIcons); } else toast(r?.pending ? 'Approve site access in the WorkForge extension window, then come back.' : 'Site access was not granted.', r?.pending ? 'info' : 'error');
+    } catch (e) { toast(e.message, 'error'); } finally { b.disabled = false; }
+  });
 }
 
 // ------------------------------------------------------------ Permissions
 async function permissions({ host, app, employee }) {
-  const sysList = Object.keys(SYSTEMS).filter((s) => s !== 'files');
-  const active = sysList.filter((s) => employee.permissions[s]);
-  const inactive = sysList.filter((s) => !employee.permissions[s]);
+  const conns = await app.getConnections();
+  const all = allSystems(conns);
+  const connected = new Set(conns.map((c) => c.id));
+  const active = employeeSystemIds(employee, conns);
+  const inactive = Object.keys(all).filter((id) => !employee.permissions?.[id]);
+  const groups = [...SYSTEM_GROUPS, 'Custom'].map((g) => [g, inactive.filter((id) => (all[id].group || 'Custom') === g).sort((a, b) => (connected.has(b) ? 1 : 0) - (connected.has(a) ? 1 : 0) || all[a].name.localeCompare(all[b].name))]).filter(([, ids]) => ids.length);
+  const domains = domainsOf(employee);
   const sel = (sys, scope) => {
     const v = employee.permissions[sys]?.[scope] || 'deny';
-    return `<select class="select select-sm lvl-${v}" data-perm="${sys}:${scope}">${['allow', 'approval', 'deny'].map((l) => `<option value="${l}" ${v === l ? 'selected' : ''}>${l === 'allow' ? 'Allow' : l === 'approval' ? 'Needs approval' : 'No access'}</option>`).join('')}</select>`;
+    return `<select class="select select-sm lvl-${v}" data-perm="${esc(sys)}:${scope}" aria-label="${esc(systemName(sys, conns))} ${SCOPE_LABELS[scope]}">${LEVELS.map((l) => `<option value="${l}" ${v === l ? 'selected' : ''}>${LEVEL_LABEL[l]}</option>`).join('')}</select>`;
   };
-  host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.5fr 1fr;align-items:start">
-    <div class="card"><div class="card-head"><div><h3>System permissions</h3><div class="tiny muted">Checked on every tool call. Employees never gain access automatically.</div></div>
-      <select class="select select-sm" style="width:180px" id="add-sys"><option value="">+ Add system</option>${inactive.map((s) => `<option value="${s}">${esc(SYSTEMS[s].name)}</option>`).join('')}</select></div>
-      <div class="table-wrap"><table class="perm-table"><thead><tr><th>System</th><th>Scopes</th><th></th></tr></thead><tbody>
-      ${active.map((s) => `<tr><td><div class="row">${sysIcon(s, true)}<span class="strong small">${esc(SYSTEMS[s].name)}</span></div></td><td><div class="row wrap gap-6">${SYSTEMS[s].scopes.map((sc) => `<label class="row gap-4 small"><span class="muted">${SCOPE_LABELS[sc]}</span>${sel(s, sc)}</label>`).join('')}</div></td><td><button class="btn btn-xs btn-ghost" data-revoke="${s}" title="Remove all access">${icon('x')}</button></td></tr>`).join('') || '<tr><td colspan="3" class="muted small">No system access</td></tr>'}
-      <tr><td><div class="row">${sysIcon('files', true)}<span class="strong small">Files &amp; Knowledge</span></div></td><td class="small">${employee.collections.length ? `Read: ${employee.collections.length} collection(s)` : 'No collections'} · <a href="#/employees/${employee.id}/files">manage</a></td><td></td></tr>
+  // Domains that are really one of the catalog systems: suggest adding the system instead.
+  const domainNotes = domains.map((d) => [d, systemForUrl(`https://${d}/`, conns)]).filter(([, sid]) => sid);
+  host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.6fr 1fr;align-items:start">
+    <div class="card"><div class="card-head"><div><h3>System permissions</h3><div class="tiny muted">Checked on every browser action, against the system the working tab is in. Employees never gain access automatically.</div></div>
+      <select class="select select-sm" style="width:200px" id="add-sys"><option value="">+ Add system</option>${groups.map(([g, ids]) => `<optgroup label="${esc(g)}">${ids.map((id) => `<option value="${esc(id)}">${esc(all[id].name)}${connected.has(id) ? '' : ' (not connected)'}</option>`).join('')}</optgroup>`).join('')}</select></div>
+      <div class="table-wrap"><table class="perm-table"><thead><tr><th>System</th>${SYSTEM_SCOPES.map((sc) => `<th>${SCOPE_LABELS[sc]}</th>`).join('')}<th></th></tr></thead><tbody>
+      ${active.map((s) => `<tr><td><div class="row">${sysIcon(s, true, systemName(s, conns))}<div><div class="strong small">${esc(systemName(s, conns))}</div>${connected.has(s) ? '' : `<button class="link-btn tiny" data-connect="${esc(s)}">Not connected — connect</button>`}</div></div></td>${SYSTEM_SCOPES.map((sc) => `<td>${sel(s, sc)}</td>`).join('')}<td><button class="btn btn-xs btn-ghost" data-revoke="${esc(s)}" title="Remove ${esc(systemName(s, conns))}">${icon('x')}</button></td></tr>`).join('') || `<tr><td colspan="${SYSTEM_SCOPES.length + 2}" class="muted small">No systems yet. Add one to let ${esc(employee.name)} work in it.</td></tr>`}
+      <tr><td><div class="row">${sysIcon('files', true)}<span class="strong small">Knowledge files</span></div></td><td colspan="${SYSTEM_SCOPES.length}" class="small">${employee.collections.length ? `Read ${lvlTag(filesLevel(employee))} · ${employee.collections.length} collection(s)` : 'No collections granted'} · <a href="#/employees/${employee.id}/files">manage</a></td><td></td></tr>
       </tbody></table></div>
-      ${app.settings.approveAllOutbound ? `<div class="card-body"><div class="callout">${icon('shield')}<div class="small">Workspace setting active: every outbound action requires approval regardless of these levels.</div></div></div>` : ''}
+      ${app.settings?.approveAllOutbound ? `<div class="card-body"><div class="callout">${icon('shield')}<div class="small">Workspace setting active: every click and typing step needs approval, whatever the levels here.</div></div></div>` : ''}
     </div>
     <div class="col gap-16">
-      <div class="card card-pad form-grid"><div class="between"><h3>${icon('globe')} Browser</h3><label class="toggle"><input type="checkbox" id="br-on" ${employee.browser.enabled ? 'checked' : ''}><span></span></label></div>
-        <p class="help">Through the extension, ${esc(employee.name)} works only in the tab you select. Navigation is limited to that tab's site plus these domains:</p>
-        <textarea class="textarea" id="br-domains" rows="3" placeholder="linkedin.com&#10;salesforce.com">${esc(employee.browser.domains.join('\n'))}</textarea>
-        <button class="btn btn-sm" id="br-save">Save browser settings</button></div>
+      <div class="card card-pad form-grid"><div class="row">${sysIcon('browser', true)}<h3>Other websites</h3></div>
+        <p class="help">Sites outside its systems that ${esc(employee.name)} may <strong>read and navigate</strong> — never click or type. One domain per line.</p>
+        <textarea class="textarea" id="br-domains" rows="3" placeholder="example.com&#10;docs.example.org">${esc(domains.join('\n'))}</textarea>
+        ${domainNotes.length ? `<div class="callout">${icon('info')}<div class="small">${domainNotes.map(([d, sid]) => `${esc(d)} is ${esc(systemName(sid, conns))} — ${employee.permissions?.[sid] ? 'its system permissions apply there.' : 'add it as a system above to set its permissions.'}`).join('<br>')}</div></div>` : ''}
+        <button class="btn btn-sm" id="br-save">Save websites</button></div>
       <div class="card card-pad col"><h3>${icon('shield-check')} Approval policy</h3>
-        <p class="small muted"><strong class="lvl-allow">Allow</strong> runs immediately. <strong class="lvl-approval">Needs approval</strong> pauses the task: “${esc(employee.name)} wants to send this email” → Approve / Edit / Reject. <strong class="lvl-deny">No access</strong> blocks the tool and tells the AI engine why.</p>
-        <p class="small muted">Scripts can also require approval for all their outbound actions (Scripts → Edit).</p></div>
+        <p class="small muted"><strong class="lvl-allow">Allow</strong> runs immediately. <strong class="lvl-approval">Needs approval</strong> pauses the task until you decide in the Approval Center — e.g. “${esc(employee.name)} wants to click “Send” in Gmail” → Approve, Edit or Reject. <strong class="lvl-deny">No access</strong> blocks the action and tells the AI engine why.</p>
+        <p class="small muted"><strong>Read</strong> and <strong>Navigate</strong> only look around. <strong>Click</strong> and <strong>Type &amp; submit</strong> can change things, so new systems start with them on approval.</p>
+        <p class="small muted">Scripts can also require approval for every click and typing step (Scripts → Edit).</p></div>
     </div></div>`;
   const save = async (e, reason) => persist(app, employee, e, reason);
   host.querySelectorAll('[data-perm]').forEach((s) => s.onchange = async () => {
     const [sys, scope] = s.dataset.perm.split(':');
     const e = clone(employee);
     e.permissions[sys] = { ...(e.permissions[sys] || {}), [scope]: s.value };
-    await save(e, `${SYSTEMS[sys].name} ${scope} → ${s.value}`);
+    await save(e, `${systemName(sys, conns)} ${SCOPE_LABELS[scope] || scope} → ${LEVEL_LABEL[s.value]}`);
   });
+  host.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => openConnectDialog(app, b.dataset.connect));
   host.querySelector('#add-sys').onchange = async (ev) => {
     const sys = ev.target.value;
     if (!sys) return;
     const e = clone(employee);
-    e.permissions[sys] = Object.fromEntries(SYSTEMS[sys].scopes.map((sc) => [sc, sc === 'read' || sc === 'extract' ? 'allow' : 'approval']));
-    if (sys === 'browser') e.browser.enabled = true;
-    await save(e, `Granted ${SYSTEMS[sys].name} access`);
+    e.permissions[sys] = { ...DEFAULT_SCOPE_LEVELS };
+    await save(e, `Granted ${systemName(sys, conns)} access (Read & Navigate allowed, Click & Type need approval)`);
   };
   host.querySelectorAll('[data-revoke]').forEach((b) => b.onclick = async () => {
+    const sys = b.dataset.revoke;
+    const name = systemName(sys, conns);
+    const scriptsUsing = employee.scripts.filter((s) => (s.systems || []).includes(sys)).map((s) => s.name);
+    if (!(await confirmDialog(`Remove ${name} from ${employee.name}? Every action in ${name} will be blocked.${scriptsUsing.length ? ` Scripts that work there (${scriptsUsing.join(', ')}) will fail at those steps.` : ''}`, { confirm: 'Remove', danger: true }))) return;
     const e = clone(employee);
-    delete e.permissions[b.dataset.revoke];
-    if (b.dataset.revoke === 'browser') e.browser.enabled = false;
-    await save(e, `Revoked ${SYSTEMS[b.dataset.revoke].name} access`);
+    delete e.permissions[sys];
+    await save(e, `Removed ${name} access`);
   });
   host.querySelector('#br-save').onclick = async () => {
     const e = clone(employee);
-    e.browser.enabled = host.querySelector('#br-on').checked;
-    e.browser.domains = host.querySelector('#br-domains').value.split(/[\s,]+/).map((d) => d.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase()).filter(Boolean);
-    if (e.browser.enabled && !e.permissions.browser) e.permissions.browser = { read: 'allow', extract: 'allow', navigate: 'approval', click: 'approval', form_input: 'approval' };
-    await save(e, `Browser ${e.browser.enabled ? 'enabled' : 'disabled'} (${e.browser.domains.join(', ') || 'working tab only'})`);
+    const list = [...new Set(host.querySelector('#br-domains').value.split(/[\s,]+/).map((d) => d.trim().replace(/^https?:\/\//i, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').toLowerCase()).filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)))];
+    e.browser = { ...(e.browser || {}), domains: list };
+    await save(e, `Other websites: ${list.join(', ') || 'none'}`);
   };
 }
 

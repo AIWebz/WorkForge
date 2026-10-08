@@ -62,11 +62,13 @@ export function createToolExecutor({ db, getConnections = async () => [], browse
   function track(task, result, fallbackUrl) {
     if (!task?.browser) return;
     const u = (result && typeof result === 'object' && (result.url_after || result.url)) || fallbackUrl;
-    if (typeof u === 'string' && u) {
+    const hasTitle = result && typeof result === 'object' && typeof result.title === 'string';
+    if (typeof u === 'string' && u && u !== task.browser.url) {
       task.browser.url = u;
       task.browser.origin = originOf(u) || task.browser.origin;
+      if (!hasTitle) task.browser.title = ''; // a different page; never keep a stale title
     }
-    if (result && typeof result === 'object' && typeof result.title === 'string') task.browser.title = result.title;
+    if (hasTitle) task.browser.title = result.title;
   }
 
   const executors = {

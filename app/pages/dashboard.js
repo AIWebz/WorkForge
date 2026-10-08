@@ -1,6 +1,7 @@
-import { esc, icon, avatar, statusBadge, timeAgo, fmtHours, sysIcon, refreshIcons, emptyState, statusColor } from '../ui.js';
+import { esc, icon, avatar, statusBadge, timeAgo, fmtHours, refreshIcons, emptyState, statusColor } from '../ui.js';
 import { computeStats } from '../../extension/core/reports.js';
 import { SYSTEMS } from '../../extension/core/catalog.js';
+import { employeeSystemIds, systemLogos } from './workflow.js';
 import { bridge } from '../bridge.js';
 
 export default async function dashboard(ctx) {
@@ -8,13 +9,14 @@ export default async function dashboard(ctx) {
   const render = async () => {
     if (!ctx.isCurrent()) return;
     const [employees, tasks, approvals, connections, activityAll, stats, aiReady] = await Promise.all([
-      app.db.all('employees'), app.db.all('tasks'), app.db.byIndex('approvals', 'status', 'pending'), app.db.all('connections'), app.db.all('activity'), computeStats(app.db), app.aiReady(),
+      app.db.all('employees'), app.db.all('tasks'), app.db.byIndex('approvals', 'status', 'pending'), app.getConnections(), app.db.all('activity'), computeStats(app.db), app.aiReady(),
     ]);
     const activity = activityAll.sort((a, b) => b.ts - a.ts).slice(0, 14);
     const empById = Object.fromEntries(employees.map((e) => [e.id, e]));
     const live = (id) => tasks.filter((t) => t.employeeId === id && ['running', 'waiting_approval', 'queued'].includes(t.status)).sort((a, b) => b.createdAt - a.createdAt)[0];
     const lastTask = (id) => tasks.filter((t) => t.employeeId === id).sort((a, b) => b.createdAt - a.createdAt)[0];
-    const connected = connections.filter((c) => c.status === 'connected').length;
+    // A system is connected when its row exists in the connections store.
+    const connected = connections.length;
     const h = new Date().getHours();
     const greet = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
     const working = employees.filter((e) => live(e.id)).length;
@@ -23,7 +25,7 @@ export default async function dashboard(ctx) {
       [!!app.business, 'Describe your business', '#/settings/business'],
       [aiReady, 'Connect the AI engine', '#/settings/ai'],
       [employees.length > 0, 'Generate your first employee', '#/create'],
-      [connected > 0, 'Connect a business system', '#/integrations'],
+      [connected > 0, 'Connect your systems', '#/systems'],
       [bridge.paired, 'Install the browser extension', '#/extension'],
     ];
     const setupDone = setup.filter((s) => s[0]).length;
@@ -40,12 +42,12 @@ export default async function dashboard(ctx) {
         ${stat('shield-check', 'Human Approvals', approvals.length, 'pending', approvals.length ? '#/approvals' : '')}
         ${stat('target', 'Success Rate', stats.successRate === null ? '—' : `${stats.successRate}%`, 'of finished tasks')}
         ${stat('clock', 'Hours Saved', fmtHours(stats.minutesSaved), 'estimated from script runs')}
-        ${stat('plug', 'Connected Systems', connected, `of ${Object.keys(SYSTEMS).length - 3} available`)}
+        ${stat('plug', 'Connected Systems', connected, `${Object.keys(SYSTEMS).length} web apps + your own`, '#/systems')}
       </div>
       <div class="grid-2 mt-24" style="grid-template-columns: 1fr 340px; align-items:start">
         <div class="card">
           <div class="card-head"><div><h3><span class="status-dot" style="background:var(--success)"></span> Live Workforce</h3><div class="tiny muted">${working} employee${working === 1 ? '' : 's'} active right now</div></div><a class="small" href="#/employees">View all</a></div>
-          <div class="card-body">${employees.length ? `<div class="grid-3">${employees.map((e) => employeeCard(e, live(e.id) || lastTask(e.id))).join('')}</div>` : emptyState('users', 'No employees yet', 'Describe the work you need done and WorkForge will generate a complete AI employee.', '<a class="btn btn-primary" href="#/create">Create Employee</a>')}</div>
+          <div class="card-body">${employees.length ? `<div class="grid-3">${employees.map((e) => employeeCard(e, live(e.id) || lastTask(e.id), connections)).join('')}</div>` : emptyState('users', 'No employees yet', 'Describe the work you need done and WorkForge will generate a complete AI employee.', '<a class="btn btn-primary" href="#/create">Create Employee</a>')}</div>
         </div>
         <div class="card">
           <div class="card-head"><h3>Recent Activity</h3><a class="small" href="#/activity">View all</a></div>
@@ -66,7 +68,7 @@ function stat(ic, label, value, sub, href = '') {
   return href ? `<a class="stat" href="${href}" style="color:inherit;text-decoration:none">${inner}</a>` : `<div class="stat">${inner}</div>`;
 }
 
-export function employeeCard(e, task) {
+export function employeeCard(e, task, connections = []) {
   const isLive = task && ['running', 'waiting_approval', 'queued'].includes(task.status);
   const status = e.status === 'paused' ? 'paused' : isLive ? (task.status === 'waiting_approval' ? 'waiting_approval' : 'working') : e.status;
   const runs = task?.scriptRuns || [];
@@ -79,6 +81,6 @@ export function employeeCard(e, task) {
     <div class="emp-head">${avatar(e)}<div class="grow"><div class="emp-name">${esc(e.name)}</div><div class="emp-role ellipsis">${esc(e.role)}</div></div>${statusBadge(status)}</div>
     <div class="emp-task"><div class="tiny muted">${isLive ? 'Current task' : task ? `Last task · ${timeAgo(task.createdAt)}` : 'No tasks yet'}</div><div class="small strong ellipsis mt-4">${esc(task?.title || e.summary || '')}</div>
     ${steps.length ? `<div class="steps-mini mt-8">${steps.join('')}</div>` : ''}</div>
-    <div class="between"><div class="row gap-4">${(e.systems || []).filter((s) => !['files', 'web', 'browser'].includes(s)).slice(0, 5).map((s) => sysIcon(s, true)).join('')}</div><span class="tiny muted">${e.scripts.length} scripts</span></div>
+    <div class="between">${systemLogos(employeeSystemIds(e, connections), connections, 5) || '<span class="tiny muted">No systems</span>'}<span class="tiny muted">${e.scripts.length} scripts</span></div>
   </a>`;
 }

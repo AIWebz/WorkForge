@@ -2,8 +2,8 @@
 // instruction into structured operations that are applied to the stored
 // employee architecture (with versioning so every change can be undone).
 import { chatJSON } from './ai.js';
-import { TOOL_MAP, SYSTEMS, catalogForPrompt } from './catalog.js';
-import { normalizeScript, usedSystems, validateEmployee, normalizeTriggers, scheduleNext } from './employee.js';
+import { TOOL_MAP, SYSTEM_SCOPES, SCOPE_LABELS, DEFAULT_SCOPE_LEVELS, BROWSER_TOOLS, allSystems, catalogForPrompt, systemForUrl } from './catalog.js';
+import { normalizeScript, usedSystems, validateEmployee, normalizeTriggers, scheduleNext, connectionRows, cleanDomain } from './employee.js';
 import { addMemory } from './memory.js';
 import { clone, slug, uid, now, truncate } from './util.js';
 
@@ -11,46 +11,52 @@ const OPS_DOC = `Supported operations (JSON objects in "operations"):
 - {"op":"update_profile","changes":{"name"?,"role"?,"summary"?,"instructions"?}}
 - {"op":"add_rule","rule":"…"} | {"op":"remove_rule","text":"rule text to remove"}
 - {"op":"add_goal","goal":"…"}
-- {"op":"add_script","script":{id,name,description,purpose,instructions,inputs,outputs,conditions,tools,next:[{script,condition}],failure,approval,estimatedMinutes},"after":"existing script id or empty","condition":"condition for the edge from 'after'","replace_edges":false}
+- {"op":"add_script","script":{id,name,description,purpose,instructions,inputs,outputs,conditions,systems:["system ids"],tools:["catalog tool names"],next:[{script,condition}],failure,approval,estimatedMinutes},"after":"existing script id or empty","condition":"condition for the edge from 'after'","replace_edges":false}
 - {"op":"update_script","id":"script id","changes":{any script fields}}
 - {"op":"remove_script","id":"script id"}  (predecessors are reconnected to its successors)
 - {"op":"add_transition","from":"id","to":"id","condition":"…"} | {"op":"remove_transition","from":"id","to":"id"}
 - {"op":"set_entry","id":"script id"}
-- {"op":"set_permission","system":"system id","scope":"scope","level":"allow|approval|deny"}
-- {"op":"set_script_approval","id":"script id","required":true,"reason":"…"}
-- {"op":"set_browser","enabled"?:bool,"add_domains"?:[],"remove_domains"?:[]}
+- {"op":"add_system","system":"system id"}  (grants the default levels: Read allow, Navigate allow, Click approval, Type & submit approval; also list it in the scripts that use it via update_script)
+- {"op":"remove_system","system":"system id"}  (revokes all access and removes it from every script)
+- {"op":"set_permission","system":"system id or files","scope":"read|navigate|click|form_input (files: read)","level":"allow|approval|deny"}
+- {"op":"set_script_approval","id":"script id","required":true,"reason":"…"}  (required = every click/type in that script needs approval)
+- {"op":"set_web_domains","add":["other websites (not systems) the employee may read/navigate"],"remove":[]}
 - {"op":"grant_collection","collection_id":"…"} | {"op":"revoke_collection","collection_id":"…"}
 - {"op":"add_memory","kind":"instructions|business|long_term","content":"…"}
 - {"op":"add_trigger","trigger":{"type":"manual|schedule","label","input","entryScript","schedule":{"everyMinutes":0,"dailyAt":"HH:MM"}}} | {"op":"remove_trigger","id":"trigger id"}
 - {"op":"run_task","input":"instruction for a new task","entry_script":"optional script id"}`;
 
-export function employeeDigest(employee, collections = []) {
+export function employeeDigest(employee, collections = [], connections = []) {
+  const systems = allSystems(connectionRows(connections));
   return {
     name: employee.name, role: employee.role, summary: employee.summary, status: employee.status,
     instructions: truncate(employee.instructions, 1500), rules: employee.rules, goals: employee.goals,
     entryScript: employee.entryScript,
     scripts: employee.scripts.map((s) => ({
       id: s.id, name: s.name, description: s.description, instructions: truncate(s.instructions, 500),
-      tools: s.tools, next: s.next, approval: s.approval, failure: s.failure.strategy,
+      systems: s.systems || [], tools: s.tools, next: s.next, approval: s.approval, failure: s.failure.strategy,
     })),
     triggers: employee.triggers.map((t) => ({ id: t.id, type: t.type, label: t.label, schedule: t.schedule, enabled: t.enabled })),
+    systems: (employee.systems || []).map((id) => ({ id, name: systems[id]?.name || id })),
     permissions: employee.permissions,
-    browser: employee.browser,
+    web_domains: employee.browser?.domains || [],
     granted_collections: (employee.collections || []).map((id) => ({ id, name: collections.find((c) => c.id === id)?.name || id })),
     available_collections: collections.map((c) => ({ id: c.id, name: c.name })),
   };
 }
 
-export async function interpretInstruction(ai, { employee, instruction, history = [], collections = [] }) {
-  const system = `You are the WorkForge AI engine's configuration controller. You modify an AI employee's actual architecture in response to the owner's instructions by emitting structured operations. If the owner asks a question, answer it from the configuration (operations may be empty). If the owner asks the employee to do work now, emit run_task. Only use tools from the catalog and systems that exist. Reply with a single JSON object.`;
+export async function interpretInstruction(ai, { employee, instruction, history = [], collections = [], connections = [] }) {
+  const conns = connectionRows(connections);
+  const system = `You are the WorkForge AI engine's configuration controller. You modify an AI employee's actual architecture in response to the owner's instructions by emitting structured operations. There are no APIs: the employee works inside systems (web apps) through the browser with the owner's own login, so access is granted per system and scope. If the owner asks a question, answer it from the configuration (operations may be empty). If the owner asks the employee to do work now, emit run_task. Only use tools from the catalog and systems that exist. Reply with a single JSON object.`;
   const prompt = `<employee_configuration>
-${JSON.stringify(employeeDigest(employee, collections), null, 1)}
+${JSON.stringify(employeeDigest(employee, collections, conns), null, 1)}
 </employee_configuration>
 
-<tool_catalog>
-${catalogForPrompt()}
-</tool_catalog>
-Permission systems and scopes: ${Object.entries(SYSTEMS).map(([k, v]) => `${k}(${v.scopes.join('/')})`).join(', ')}
+<catalog>
+${catalogForPrompt(conns)}
+</catalog>
+Permission scopes per system: ${SYSTEM_SCOPES.map((sc) => `${sc} (${SCOPE_LABELS[sc]})`).join(', ')}. Knowledge files: "files" with scope read. Levels: allow | approval | deny.
+Connected systems: ${conns.map((c) => c.id).join(', ') || 'none'}
 
 ${OPS_DOC}
 
@@ -68,8 +74,13 @@ Return JSON: {"reply":"short confirmation or answer addressed to the owner, desc
 }
 
 /** Apply operations to a copy of the employee. Returns {employee, results, runTasks}. */
-export function applyOperations(original, operations, { collections = [] } = {}) {
+export function applyOperations(original, operations, { collections = [], connections = [] } = {}) {
+  const conns = connectionRows(connections);
+  const systems = allSystems(conns);
   const e = clone(original);
+  e.permissions = e.permissions || {};
+  e.browser = { domains: [...(e.browser?.domains || [])] };
+  const removedSystems = new Set();
   const results = [];
   const runTasks = [];
   const ids = () => new Set(e.scripts.map((s) => s.id));
@@ -97,7 +108,7 @@ export function applyOperations(original, operations, { collections = [] } = {})
         case 'add_goal': e.goals.push(String(op.goal)); ok(op, `Added goal: ${op.goal}`); break;
         case 'add_script': {
           const used = ids();
-          const s = normalizeScript(op.script || {}, e.scripts.length, used);
+          const s = normalizeScript(op.script || {}, e.scripts.length, used, conns);
           const existing = new Set(e.scripts.map((x) => x.id).concat(s.id));
           s.next = s.next.filter((n) => existing.has(n.script));
           e.scripts.push(s);
@@ -116,7 +127,8 @@ export function applyOperations(original, operations, { collections = [] } = {})
           const s = find(op.id);
           if (!s) { fail(op, `Script ${op.id} not found`); break; }
           const c = op.changes || {};
-          const merged = normalizeScript({ ...s, ...c, id: s.id, failure: { ...s.failure, ...(c.failure || {}) }, approval: { ...s.approval, ...(c.approval || {}) } }, 0, new Set());
+          const merged = normalizeScript({ ...s, ...c, id: s.id, failure: { ...s.failure, ...(c.failure || {}) }, approval: { ...s.approval, ...(c.approval || {}) } }, 0, new Set(), conns);
+          if (c.systems) for (const id of merged.systems) removedSystems.delete(id);
           merged.id = s.id;
           merged.next = merged.next.filter((n) => ids().has(n.script));
           Object.assign(s, merged);
@@ -164,10 +176,33 @@ export function applyOperations(original, operations, { collections = [] } = {})
           break;
         }
         case 'set_permission': {
-          if (!SYSTEMS[op.system] || !SYSTEMS[op.system].scopes.includes(op.scope) || !['allow', 'approval', 'deny'].includes(op.level)) { fail(op, 'Invalid permission'); break; }
-          e.permissions[op.system] = e.permissions[op.system] || {};
+          const isFiles = op.system === 'files';
+          if (!isFiles && !systems[op.system]) { fail(op, `Unknown system ${op.system}`); break; }
+          if (!(isFiles ? ['read'] : SYSTEM_SCOPES).includes(op.scope) || !['allow', 'approval', 'deny'].includes(op.level)) { fail(op, 'Invalid permission'); break; }
+          if (!e.permissions[op.system]) {
+            // Least privilege: a system granted one scope gets nothing else.
+            e.permissions[op.system] = isFiles ? {} : Object.fromEntries(SYSTEM_SCOPES.map((sc) => [sc, 'deny']));
+          }
           e.permissions[op.system][op.scope] = op.level;
-          ok(op, `${SYSTEMS[op.system].name} ${op.scope}: ${op.level}`);
+          removedSystems.delete(op.system);
+          ok(op, `${isFiles ? 'Knowledge files' : systems[op.system].name} ${SCOPE_LABELS[op.scope] || op.scope}: ${op.level}`);
+          break;
+        }
+        case 'add_system': {
+          if (!systems[op.system]) { fail(op, `Unknown system ${op.system}`); break; }
+          if (e.permissions[op.system] && usedSystems(e).includes(op.system)) { ok(op, `${systems[op.system].name} is already available`); break; }
+          e.permissions[op.system] = { ...DEFAULT_SCOPE_LEVELS };
+          removedSystems.delete(op.system);
+          ok(op, `Added ${systems[op.system].name} (read & navigate allowed; clicking and typing need approval)`);
+          break;
+        }
+        case 'remove_system': {
+          const id = op.system;
+          if (!e.permissions[id] || id === 'files') { fail(op, `${systems[id]?.name || id} is not one of this employee's systems`); break; }
+          delete e.permissions[id];
+          for (const s of e.scripts) s.systems = (s.systems || []).filter((x) => x !== id);
+          removedSystems.add(id);
+          ok(op, `Removed ${systems[id]?.name || id}`);
           break;
         }
         case 'set_script_approval': {
@@ -177,12 +212,13 @@ export function applyOperations(original, operations, { collections = [] } = {})
           ok(op, `${s.name}: approval ${s.approval.required ? 'required' : 'not required'}`);
           break;
         }
-        case 'set_browser': {
-          if (typeof op.enabled === 'boolean') e.browser.enabled = op.enabled;
-          const clean = (d) => String(d).replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase();
-          for (const d of op.add_domains || []) if (!e.browser.domains.includes(clean(d))) e.browser.domains.push(clean(d));
-          e.browser.domains = e.browser.domains.filter((d) => !(op.remove_domains || []).map(clean).includes(d));
-          ok(op, `Browser ${e.browser.enabled ? 'enabled' : 'disabled'}; domains: ${e.browser.domains.join(', ') || 'working tab only'}`);
+        case 'set_web_domains': {
+          const add = (Array.isArray(op.add) ? op.add : []).map(cleanDomain).filter((d) => d && d.includes('.'));
+          const remove = (Array.isArray(op.remove) ? op.remove : []).map(cleanDomain);
+          const asSystem = add.filter((d) => systemForUrl(`https://${d}/`, conns));
+          for (const d of add) if (!asSystem.includes(d) && !e.browser.domains.includes(d)) e.browser.domains.push(d);
+          e.browser.domains = e.browser.domains.filter((d) => !remove.includes(d));
+          ok(op, `Other websites: ${e.browser.domains.join(', ') || 'none'}${asSystem.length ? ` (${asSystem.join(', ')} belong to systems — use add_system)` : ''}`);
           break;
         }
         case 'grant_collection': {
@@ -226,7 +262,14 @@ export function applyOperations(original, operations, { collections = [] } = {})
       fail(op, err.message);
     }
   }
-  for (const s of e.scripts) s.tools = s.tools.filter((t) => TOOL_MAP[t] && !TOOL_MAP[t].internal);
+  for (const s of e.scripts) {
+    s.tools = s.tools.filter((t) => TOOL_MAP[t] && TOOL_MAP[t].system !== 'internal');
+    s.systems = (s.systems || []).filter((id) => !removedSystems.has(id));
+    // A script that works in a system the employee has no entry for gets the defaults
+    // (same rule as generation); systems the owner removed stay removed.
+    for (const id of s.systems) if (!e.permissions[id]) e.permissions[id] = { ...DEFAULT_SCOPE_LEVELS };
+    if (s.systems.length && !s.tools.some((t) => BROWSER_TOOLS.includes(t))) s.tools.push('browser_open', 'browser_read_page');
+  }
   e.systems = usedSystems(e);
   return { employee: e, results, runTasks };
 }
@@ -236,16 +279,17 @@ export async function saveVersion(db, employee, reason) {
 }
 
 /** Interpret + apply + persist. */
-export async function modifyEmployee({ db, ai, employee, instruction, history, collections, connections, actor = 'chat' }) {
-  const { reply, operations } = await interpretInstruction(ai, { employee, instruction, history, collections });
+export async function modifyEmployee({ db, ai, employee, instruction, history, collections = [], connections = [], actor = 'chat' }) {
+  const conns = connectionRows(connections);
+  const { reply, operations } = await interpretInstruction(ai, { employee, instruction, history, collections, connections: conns });
   const configOps = operations.filter((o) => o.op !== 'run_task');
-  const { employee: updated, results, runTasks } = applyOperations(employee, operations, { collections });
+  const { employee: updated, results, runTasks } = applyOperations(employee, operations, { collections, connections: conns });
   const changed = configOps.length && results.some((r) => r.ok && r.op !== 'run_task');
   if (changed) {
     await saveVersion(db, employee, instruction);
     updated.version = (employee.version || 1) + 1;
     updated.updatedAt = now();
-    updated.tests = validateEmployee(updated, { connections, collections });
+    updated.tests = validateEmployee(updated, { connections: conns, collections });
     await db.put('employees', updated);
     for (const r of results) if (r.memory) await addMemory(db, updated.id, r.memory.kind, r.memory.content, { source: actor });
     await db.put('activity', {

@@ -1,24 +1,21 @@
 import { esc, icon, on, toast, avatar, sysIcon, refreshIcons, statusBadge } from '../ui.js';
-import { CONNECTIONS, SYSTEMS } from '../../extension/core/catalog.js';
+import { SYSTEMS, SCOPE_LABELS, allSystems } from '../../extension/core/catalog.js';
 import { generateEmployee, GENERATION_STAGES } from '../../extension/core/generator.js';
 import { scheduleNext } from '../../extension/core/employee.js';
 import { uid } from '../../extension/core/util.js';
 import { renderWorkflow } from './workflow.js';
 
+// What the employee may do in the selected systems. Each maps to a scope that is
+// applied to every selected system (files is the knowledge-file permission).
 const PERMS = [
-  { key: 'files', label: 'Read knowledge files', apply: (p) => { p.files = { read: 'allow' }; }, deny: () => {} },
-  { key: 'crm_read', label: 'Access CRM data', apply: (p) => { for (const s of ['hubspot', 'salesforce']) p[s] = { ...(p[s] || {}), read: 'allow' }; }, deny: (p) => { for (const s of ['hubspot', 'salesforce']) p[s] = { ...(p[s] || {}), read: 'deny' }; }, text: 'access CRM data' },
-  { key: 'crm_write', label: 'Update CRM records', apply: (p) => { for (const s of ['hubspot', 'salesforce']) p[s] = { ...(p[s] || {}), write: 'approval' }; }, deny: (p) => { for (const s of ['hubspot', 'salesforce']) p[s] = { ...(p[s] || {}), write: 'deny' }; }, text: 'update CRM records' },
-  { key: 'email', label: 'Send emails', apply: (p) => { p.gmail = { ...(p.gmail || {}), send: 'approval' }; }, deny: (p) => { p.gmail = { ...(p.gmail || {}), send: 'deny' }; }, text: 'send emails' },
-  { key: 'calendar', label: 'Make calendar bookings', apply: (p) => { p.google_calendar = { ...(p.google_calendar || {}), create: 'approval' }; }, deny: (p) => { p.google_calendar = { ...(p.google_calendar || {}), create: 'deny' }; }, text: 'book calendar events' },
-  { key: 'slack', label: 'Post to Slack', apply: (p) => { p.slack = { ...(p.slack || {}), send: 'approval' }; }, deny: (p) => { p.slack = { ...(p.slack || {}), send: 'deny' }; }, text: 'post to Slack' },
+  { key: 'read', label: 'Read data in your systems', level: 'allow', text: 'read data in the systems' },
+  { key: 'navigate', label: 'Move between pages', level: 'allow', text: 'move between pages' },
+  { key: 'click', label: 'Click buttons (send, save…)', level: 'approval', text: 'click buttons (send, save, submit)' },
+  { key: 'form_input', label: 'Type into forms', level: 'approval', text: 'type into forms' },
+  { key: 'files', label: 'Read knowledge files', level: 'allow', text: 'read knowledge files' },
 ];
-const DEFAULT_PERMS = new Set(['files', 'crm_read', 'crm_write', 'email', 'calendar', 'slack']);
-
-const INTEGRATIONS = [
-  ...Object.entries(CONNECTIONS).map(([id, c]) => ({ id, name: c.name, sub: c.systems.map((s) => SYSTEMS[s].name).join(', '), systems: c.systems })),
-  { id: 'web', name: 'Web Research', sub: 'Public websites', systems: ['web'] },
-];
+const SENSITIVE = new Set(['click', 'form_input']);
+const VISIBLE_TILES = 12;
 
 // ------------------------------------------------------------ generation jobs
 export function startGeneration(app, { request, form = {} }) {
@@ -29,7 +26,7 @@ export function startGeneration(app, { request, form = {} }) {
   (async () => {
     try {
       const ai = await app.getAI();
-      const [connections, collections] = await Promise.all([app.connectionMap(), app.db.all('collections')]);
+      const [connections, collections] = await Promise.all([app.getConnections(), app.db.all('collections')]);
       const employee = await generateEmployee({
         db: app.db, ai, request, business: app.business, form, connections, collections,
         onStage: (stage, status, detail) => { job.stages[stage] = { status, detail: detail || '' }; emit(); },
@@ -46,60 +43,77 @@ export function startGeneration(app, { request, form = {} }) {
   return id;
 }
 
+/** Turns selected system ids into the generation form fields (names for the prompt + ids). */
+export function systemsForForm(ids, connections = []) {
+  const all = allSystems(connections);
+  const systemIds = ids.filter((id) => all[id]);
+  return { systems: systemIds.map((id) => all[id].name), systemIds };
+}
+
 export default async function create(ctx) {
   if (ctx.params.job) return generationScreen(ctx);
   return createForm(ctx);
 }
 
 async function createForm({ el, app, navigate, query }) {
-  const [connections, collections, aiReady] = await Promise.all([app.connectionMap(), app.db.all('collections'), app.aiReady()]);
-  const selected = new Set(Object.values(connections).filter((c) => c.status === 'connected').map((c) => c.id));
+  const [rows, collections, aiReady] = await Promise.all([app.getConnections(), app.db.all('collections'), app.aiReady()]);
+  const all = allSystems(rows);
+  const connected = new Set(rows.filter((r) => all[r.id]).map((r) => r.id));
+  const fromBusiness = (app.business?.systems || []).filter((id) => all[id]);
+  const selected = new Set(connected.size ? connected : fromBusiness);
+  // Connected first, then the systems the business uses, then the rest of the catalog.
+  const order = [...new Set([...connected, ...fromBusiness, ...Object.keys(all)])];
+  let showAll = false;
   let expert = false;
   const prefill = query.request || app.business?.automate || '';
+
+  const tileHtml = (id, i) => {
+    const s = all[id];
+    const sub = connected.has(id) ? 'Connected' : s.address ? 'Needs your address' : 'Not connected yet';
+    return `<button type="button" class="tile ${selected.has(id) ? 'selected' : ''}" data-sys="${esc(id)}" ${!showAll && i >= VISIBLE_TILES && !selected.has(id) ? 'hidden' : ''} aria-pressed="${selected.has(id)}">${sysIcon(id, false, s.name)}<div class="grow" style="min-width:0"><div class="ellipsis">${esc(s.name)}</div><div class="tile-sub">${sub}</div></div></button>`;
+  };
 
   el.innerHTML = `<div class="page">
     <a class="back" href="#/employees">${icon('arrow-left')} Back to employees</a>
     <div class="page-head">
-      <div><h1>Create Your AI Employee</h1><p>Describe what you need and the AI engine will generate a fully configured employee with scripts, tools, memory, workflows and permissions.</p></div>
-      <div class="row small" style="border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:#fff">${icon('settings-2')} Expert mode <label class="toggle"><input type="checkbox" id="expert"><span></span></label></div>
+      <div><h1>Create an AI employee</h1><p>Describe the job. The AI engine designs the scripts, decisions, memory and permissions; the employee then works in your systems through the browser, signed in as you.</p></div>
+      <div class="row small" style="border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:var(--surface)">${icon('settings-2')} Expert mode <label class="toggle"><input type="checkbox" id="expert" aria-label="Expert mode"><span></span></label></div>
     </div>
     ${aiReady ? '' : `<div class="callout warn mb-16">${icon('alert-triangle')}<div>The AI engine is not configured${app.vault.locked ? ' (vault locked)' : ''}. <a href="#/settings/ai">Add your AI provider key</a> to generate employees.</div></div>`}
     <div class="grid-2" style="grid-template-columns: 1.15fr 1fr; align-items:start">
       <div class="card card-pad form-grid">
         <div class="form-row">
-          <label class="field"><span>Employee Name</span><div class="input-icon">${icon('user')}<input class="input" id="f-name" placeholder="e.g. Alex (optional)"></div></label>
-          <label class="field"><span>Role / Job Title</span><input class="input" id="f-role" placeholder="e.g. Lead Operations (optional)"></label>
+          <label class="field"><span>Employee name</span><div class="input-icon">${icon('user')}<input class="input" id="f-name" placeholder="e.g. Alex (optional)"></div></label>
+          <label class="field"><span>Role / job title</span><input class="input" id="f-role" placeholder="e.g. Sales assistant (optional)"></label>
         </div>
-        <label class="field"><span>What employee do you need?</span>
-          <textarea class="textarea" id="f-request" rows="7" maxlength="4000" placeholder="I need someone to handle incoming customer support requests, search our documentation, answer customers, escalate complex problems to humans, and create support tickets.">${esc(prefill)}</textarea>
-          <div class="between"><span class="help">Describe the work, the systems involved, decisions it should make and what needs your approval.</span><span class="help" id="f-count">0/4000</span></div>
+        <label class="field"><span>What should this employee do?</span>
+          <textarea class="textarea" id="f-request" rows="7" maxlength="4000" placeholder="Every morning, go through new support emails in Gmail, look up the customer in HubSpot, draft a reply using our help docs and ask me before sending. Escalate refunds over $200.">${esc(prefill)}</textarea>
+          <div class="between"><span class="help">Describe the work, where it happens, the decisions it makes and what needs your approval.</span><span class="help" id="f-count">0/4000</span></div>
         </label>
         <div>
-          <div class="row mb-8">${icon('lock')}<span class="label">Access &amp; Permissions</span></div>
-          <p class="help mb-8">What can this employee access? Outbound actions always start as approval-required.</p>
-          <div class="grid-2" style="gap:8px">${PERMS.map((p) => `<label class="check"><input type="checkbox" data-perm="${p.key}" ${DEFAULT_PERMS.has(p.key) ? 'checked' : ''}>${p.label}</label>`).join('')}</div>
+          <div class="row mb-8">${icon('lock')}<span class="label">What it may do</span></div>
+          <p class="help mb-8">Applies to the systems you select. Clicking and typing always wait for your approval unless you change that in Expert mode.</p>
+          <div class="grid-2" style="gap:8px">${PERMS.map((p) => `<label class="check"><input type="checkbox" data-perm="${p.key}" checked>${p.label}${SENSITIVE.has(p.key) ? ' <span class="badge badge-warning" style="margin-left:4px">approval</span>' : ''}</label>`).join('')}</div>
         </div>
         <div id="expert-box" hidden class="form-grid">
           <div class="divider"></div>
           <label class="field"><span>Additional instructions / policies</span><textarea class="textarea" id="f-extra" rows="3" placeholder="Tone of voice, qualification criteria, escalation contacts, working hours…"></textarea></label>
           <label class="field"><span>Grant knowledge collections</span>
-            ${collections.length ? `<div class="col gap-6">${collections.map((c) => `<label class="check"><input type="checkbox" data-coll="${c.id}">${esc(c.name)}</label>`).join('')}</div>` : '<span class="help">No collections yet — <a href="#/files">upload files</a> first.</span>'}
+            ${collections.length ? `<div class="col gap-6">${collections.map((c) => `<label class="check"><input type="checkbox" data-coll="${esc(c.id)}">${esc(c.name)}</label>`).join('')}</div>` : '<span class="help">No collections yet — <a href="#/files">upload files</a> first.</span>'}
           </label>
-          <label class="check"><input type="checkbox" id="f-noapproval"> Allow outbound actions without approval (not recommended)</label>
+          <label class="check" style="align-items:flex-start"><input type="checkbox" id="f-noapproval"><div><div>Let it click and type without asking me first</div><div class="help">Not recommended. The employee could send emails, save records or submit forms on its own.</div></div></label>
+          <div class="callout danger" id="noapproval-warn" hidden>${icon('alert-triangle')}<div class="small">Clicks and form input will run without approval in every selected system. You can still require approval for everything in Settings → Security.</div></div>
         </div>
       </div>
       <div class="col gap-16">
         <div class="card card-pad">
-          <div class="between"><h3>Selected Integrations</h3><a class="small" href="#/integrations">Manage</a></div>
-          <p class="help mt-4 mb-16">Choose the systems this employee will use. Unconnected systems can be connected later.</p>
-          <div class="tiles" id="tiles">${INTEGRATIONS.map((i) => `<button class="tile ${selected.has(i.id) ? 'selected' : ''}" data-int="${i.id}">${sysIcon(i.id === 'web' ? 'web' : i.id)}<div class="grow"><div class="ellipsis">${esc(i.name)}</div><div class="tile-sub">${connections[i.id]?.status === 'connected' ? 'Connected' : i.id === 'web' ? 'Via extension' : 'Not connected'}</div></div></button>`).join('')}</div>
-          <a class="link-btn mt-12" href="#/integrations">${icon('plus')} Add more integrations</a>
+          <div class="between"><h3>Systems it works in</h3><a class="small" href="#/systems">Manage systems</a></div>
+          <p class="help mt-4 mb-16">The employee opens these web apps in a browser tab with your login. Systems you have not connected can be connected later.</p>
+          <div class="tiles" id="tiles">${order.map(tileHtml).join('')}</div>
+          ${order.length > VISIBLE_TILES ? `<button type="button" class="link-btn mt-12" id="more">${icon('chevron-down')} Show all ${order.length} systems</button>` : ''}
         </div>
-        <div class="card card-pad between">
-          <div class="row">${icon('puzzle')}<div><div class="strong">Browser Extension</div><div class="help">Allow the employee to work in browser tabs you select.</div></div></div>
-          <label class="toggle"><input type="checkbox" id="f-browser"><span></span></label>
-        </div>
-        <button class="btn btn-primary btn-lg btn-block" id="generate" ${aiReady ? '' : 'disabled'}>${icon('sparkles')} Generate Employee ${icon('arrow-right')}</button>
+        <div class="callout">${icon('puzzle')}<div class="small">Employees work through the WorkForge browser extension, in tabs that use your signed-in session. <a href="#/extension">Set up the extension</a> if you have not yet.</div></div>
+        <button class="btn btn-primary btn-lg btn-block" id="generate" ${aiReady ? '' : 'disabled'}>${icon('sparkles')} Generate employee ${icon('arrow-right')}</button>
       </div>
     </div>
   </div>`;
@@ -109,44 +123,52 @@ async function createForm({ el, app, navigate, query }) {
   req.addEventListener('input', count);
   count();
   el.querySelector('#expert').addEventListener('change', (e) => { expert = e.target.checked; el.querySelector('#expert-box').hidden = !expert; });
-  on(el, 'click', '[data-int]', (e, b) => {
-    const id = b.dataset.int;
+  el.querySelector('#f-noapproval').addEventListener('change', (e) => { el.querySelector('#noapproval-warn').hidden = !e.target.checked; });
+  el.querySelector('#more')?.addEventListener('click', (e) => {
+    showAll = !showAll;
+    el.querySelectorAll('[data-sys]').forEach((t, i) => { t.hidden = !showAll && i >= VISIBLE_TILES && !selected.has(t.dataset.sys); });
+    e.currentTarget.innerHTML = showAll ? `${icon('chevron-up')} Show fewer` : `${icon('chevron-down')} Show all ${order.length} systems`;
+    refreshIcons();
+  });
+  on(el, 'click', '[data-sys]', (e, b) => {
+    const id = b.dataset.sys;
     if (selected.has(id)) selected.delete(id); else selected.add(id);
     b.classList.toggle('selected', selected.has(id));
+    b.setAttribute('aria-pressed', String(selected.has(id)));
   });
 
   el.querySelector('#generate').addEventListener('click', () => {
     const request = req.value.trim();
     if (request.length < 15) return toast('Describe the employee you need in a sentence or two.', 'error');
-    const permissions = {};
-    const constraints = [];
+    const ids = order.filter((id) => selected.has(id));
+    const checked = Object.fromEntries(PERMS.map((p) => [p.key, el.querySelector(`[data-perm="${p.key}"]`).checked]));
+    const noApproval = expert && el.querySelector('#f-noapproval').checked;
+    const levels = {};
     for (const p of PERMS) {
-      const checked = el.querySelector(`[data-perm="${p.key}"]`).checked;
-      if (checked) p.apply(permissions); else { p.deny(permissions); if (p.text) constraints.push(`must NOT ${p.text}`); }
+      if (p.key === 'files') continue;
+      levels[p.key] = !checked[p.key] ? 'deny' : SENSITIVE.has(p.key) && noApproval ? 'allow' : p.level;
     }
-    if (expert && el.querySelector('#f-noapproval').checked) {
-      for (const scopes of Object.values(permissions)) for (const k of Object.keys(scopes)) if (scopes[k] === 'approval') scopes[k] = 'allow';
-    }
-    const systems = [...selected].flatMap((id) => INTEGRATIONS.find((i) => i.id === id)?.systems || []);
-    const browser = el.querySelector('#f-browser').checked;
+    const permissions = Object.fromEntries(ids.map((id) => [id, { ...levels }]));
+    permissions.files = { read: checked.files ? 'allow' : 'deny' };
+    const constraints = PERMS.filter((p) => !checked[p.key]).map((p) => `must NOT ${p.text}`);
+    const { systems, systemIds } = systemsForForm(ids, rows);
     const extra = expert ? el.querySelector('#f-extra').value.trim() : '';
     const fullRequest = [
       request,
       extra && `Additional policies: ${extra}`,
-      systems.length && `Systems available: ${systems.map((s) => SYSTEMS[s].name).join(', ')}.`,
+      systems.length && `Systems it works in (through the browser, with the owner's login): ${systems.join(', ')}.`,
       constraints.length && `Owner constraints: the employee ${constraints.join('; ')}.`,
-      browser && 'The employee should be able to work inside browser tabs through the WorkForge extension.',
     ].filter(Boolean).join('\n');
     const form = {
       name: el.querySelector('#f-name').value.trim(),
       role: el.querySelector('#f-role').value.trim(),
-      systems: systems.map((s) => SYSTEMS[s].name),
-      permissions, browser,
+      systems, systemIds, permissions,
       collections: [...el.querySelectorAll('[data-coll]:checked')].map((c) => c.dataset.coll),
     };
     const job = startGeneration(app, { request: fullRequest, form });
     navigate(`/generate/${job}`);
   });
+  refreshIcons();
 }
 
 // ------------------------------------------------------------ generation screen
@@ -159,13 +181,13 @@ async function generationScreen(ctx) {
   }
   const render = async () => {
     if (!ctx.isCurrent()) return;
-    const employee = job.employeeId ? await app.db.get('employees', job.employeeId) : null;
+    const [employee, rows] = await Promise.all([job.employeeId ? app.db.get('employees', job.employeeId) : null, app.getConnections()]);
     const done = GENERATION_STAGES.filter((s) => job.stages[s.id].status === 'done').length;
     el.innerHTML = `<div class="page">
       <a class="back" href="#/create">${icon('arrow-left')} Back</a>
       <div class="page-head"><div><h1>${employee ? `${esc(employee.name)} is ready` : job.status === 'error' ? 'Generation stopped' : 'Generating your employee…'}</h1>
       <p>${esc(job.request.split('\n')[0].slice(0, 220))}</p></div>
-      ${employee ? `<div class="row"><a class="btn" href="#/employees/${employee.id}">${icon('settings-2')} Review &amp; edit</a><button class="btn btn-primary" id="deploy">${icon('rocket')} Deploy Employee</button></div>` : ''}</div>
+      ${employee ? `<div class="row"><a class="btn" href="#/employees/${esc(employee.id)}">${icon('settings-2')} Review &amp; edit</a><button class="btn btn-primary" id="deploy">${icon('rocket')} Deploy employee</button></div>` : ''}</div>
       <div class="grid-2" style="grid-template-columns: 340px 1fr; align-items:start">
         <div class="card card-pad">
           <div class="between mb-16"><h3>Build progress</h3><span class="small muted">${done}/${GENERATION_STAGES.length}</span></div>
@@ -174,17 +196,17 @@ async function generationScreen(ctx) {
     const st = job.stages[s.id];
     return `<div class="gen-step ${st.status}"><span class="ic">${st.status === 'done' ? icon('check') : st.status === 'running' ? '<span class="spinner sm"></span>' : st.status === 'error' ? icon('x') : ''}</span><div class="grow"><div>${s.label}</div>${st.detail ? `<div class="tiny ${st.status === 'error' ? '' : 'muted'}">${esc(st.detail)}</div>` : ''}</div></div>`;
   }).join('')}
-          <div class="gen-step ${employee ? 'done' : ''}"><span class="ic">${employee ? icon('check') : ''}</span><div><strong>Employee Ready</strong></div></div></div>
+          <div class="gen-step ${employee ? 'done' : ''}"><span class="ic">${employee ? icon('check') : ''}</span><div><strong>Employee ready</strong></div></div></div>
           ${job.status === 'error' ? `<div class="callout danger mt-16">${icon('alert-triangle')}<div><div class="small">${esc(job.error)}</div><div class="row mt-8"><button class="btn btn-sm" id="retry">${icon('refresh-cw')} Retry</button><a class="btn btn-sm btn-ghost" href="#/create?request=${encodeURIComponent(job.request.split('\n')[0])}">Edit request</a></div></div></div>` : ''}
         </div>
-        <div id="arch">${employee ? archHtml(employee) : `<div class="card card-pad"><div class="empty">${job.status === 'error' ? '' : '<div class="spinner"></div>'}<h3>${job.status === 'error' ? 'Nothing was created' : 'The AI engine is designing the architecture'}</h3><p class="small">${job.status === 'error' ? 'Fix the issue and retry.' : 'Requirement analysis and architecture design are real model calls and can take a minute.'}</p></div></div>`}</div>
+        <div id="arch">${employee ? archHtml(employee, rows) : `<div class="card card-pad"><div class="empty">${job.status === 'error' ? '' : '<div class="spinner"></div>'}<h3>${job.status === 'error' ? 'Nothing was created' : 'The AI engine is designing the architecture'}</h3><p class="small">${job.status === 'error' ? 'Fix the issue and retry.' : 'Requirement analysis and architecture design are real model calls and can take a minute.'}</p></div></div>`}</div>
       </div></div>`;
     refreshIcons();
     if (employee) {
-      renderWorkflow(el.querySelector('#wf'), employee, { compact: true });
+      renderWorkflow(el.querySelector('#wf'), employee, { compact: true, connections: rows });
       el.querySelector('#deploy').onclick = async () => {
         employee.status = 'active';
-        employee.triggers.forEach((t) => { if (t.type === 'schedule') { t.enabled = true; t.nextRunAt = scheduleNext(t); } });
+        (employee.triggers || []).forEach((t) => { if (t.type === 'schedule') { t.enabled = true; t.nextRunAt = scheduleNext(t); } });
         await app.db.put('employees', employee);
         toast(`${employee.name} deployed`, 'success');
         navigate(`/employees/${employee.id}`);
@@ -197,25 +219,38 @@ async function generationScreen(ctx) {
   await render();
 }
 
-function archHtml(e) {
-  const tools = new Set(e.scripts.flatMap((s) => s.tools));
-  const approvals = Object.values(e.permissions).flatMap((s) => Object.values(s)).filter((v) => v === 'approval').length;
+const LEVEL_TEXT = { allow: '✓', approval: '(approval)', deny: '✕' };
+
+function archHtml(e, rows = []) {
+  const all = allSystems(rows);
+  const connected = new Set(rows.map((r) => r.id));
+  const sysName = (id) => all[id]?.name || SYSTEMS[id]?.name || id;
+  const systems = e.systems || Object.keys(e.permissions || {}).filter((k) => k !== 'files');
+  const tools = new Set((e.scripts || []).flatMap((s) => s.tools || []));
+  const approvals = Object.values(e.permissions || {}).flatMap((s) => Object.values(s)).filter((v) => v === 'approval').length;
+  const results = e.tests?.results || [];
+  const missing = systems.filter((id) => !connected.has(id));
   return `<div class="col gap-16">
     <div class="card card-pad">
       <div class="row">${avatar(e, 'avatar-lg')}<div class="grow"><h2>${esc(e.name)} — ${esc(e.role)}</h2><p class="muted small mt-4">${esc(e.summary)}</p></div>${statusBadge(e.status)}</div>
       <div class="stats mt-16">
-        ${[['Scripts', e.scripts.length], ['Tools', tools.size], ['Systems', e.systems.length], ['Approval gates', approvals], ['Checks passed', `${e.tests.results.filter((r) => r.severity === 'pass').length}/${e.tests.results.length}`]].map(([l, v]) => `<div class="stat"><div class="stat-top">${l}</div><div class="stat-value">${v}</div></div>`).join('')}
+        ${[['Scripts', (e.scripts || []).length], ['Tools', tools.size], ['Systems', systems.length], ['Approval gates', approvals], ['Checks passed', `${results.filter((r) => r.severity === 'pass').length}/${results.length}`]].map(([l, v]) => `<div class="stat"><div class="stat-top">${l}</div><div class="stat-value">${v}</div></div>`).join('')}
       </div>
     </div>
-    <div class="card"><div class="card-head"><h3>Workflow</h3><span class="small muted">Entry: ${esc(e.scripts.find((s) => s.id === e.entryScript)?.name || '')}</span></div><div class="card-body"><div id="wf"></div></div></div>
+    <div class="card"><div class="card-head"><h3>Works in</h3><a class="small" href="#/systems">Systems</a></div><div class="card-body col gap-6">
+      ${systems.length ? `<div class="row wrap">${systems.map((id) => `<span class="chip">${sysIcon(id, true, sysName(id))}${esc(sysName(id))}${connected.has(id) ? '' : ' <span class="tiny s-wait">not connected</span>'}</span>`).join('')}</div>` : '<span class="muted small">No systems — this employee works only with memory and knowledge files.</span>'}
+      ${missing.length ? `<div class="callout warn mt-8">${icon('plug')}<div class="small">Connect ${missing.map((id) => esc(sysName(id))).join(', ')} in <a href="#/systems">Systems</a> before deploying so the employee can open ${missing.length === 1 ? 'it' : 'them'}.</div></div>` : ''}
+    </div></div>
+    <div class="card"><div class="card-head"><h3>Workflow</h3><span class="small muted">Entry: ${esc((e.scripts || []).find((s) => s.id === e.entryScript)?.name || '')}</span></div><div class="card-body"><div id="wf"></div></div></div>
     <div class="card"><div class="card-head"><h3>Generated scripts</h3></div><div class="card-body col">
-      ${e.scripts.map((s, i) => `<div class="row-top"><span class="num">${i + 1}</span><div class="grow"><div class="strong small">${esc(s.name)} ${s.approval.required ? '<span class="badge badge-warning">approval</span>' : ''}</div><div class="small muted">${esc(s.description)}</div><div class="mt-4">${s.tools.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></div>`).join('')}
+      ${(e.scripts || []).map((s, i) => `<div class="row-top"><span class="num">${i + 1}</span><div class="grow"><div class="strong small row gap-6">${esc(s.name)} ${(s.systems || []).map((id) => sysIcon(id, true, sysName(id))).join('')} ${s.approval?.required ? '<span class="badge badge-warning">approval</span>' : ''}</div><div class="small muted">${esc(s.description)}</div><div class="mt-4">${(s.tools || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></div>`).join('')}
     </div></div>
-    <div class="card"><div class="card-head"><h3>Validation</h3>${e.tests.passed ? statusBadge('success', 'Passed') : statusBadge('failed')}</div><div class="card-body col gap-6">
-      ${e.tests.results.map((r) => `<div class="row small"><span class="${r.severity === 'pass' ? 's-ok' : r.severity === 'warn' ? 's-wait' : 's-err'}">${icon(r.severity === 'pass' ? 'check-circle-2' : r.severity === 'warn' ? 'alert-triangle' : 'x-circle')}</span><span class="strong">${esc(r.name)}</span><span class="muted grow ellipsis">${esc(r.detail)}</span></div>`).join('')}
+    <div class="card"><div class="card-head"><h3>Validation</h3>${e.tests?.passed ? statusBadge('success', 'Passed') : statusBadge('failed')}</div><div class="card-body col gap-6">
+      ${results.map((r) => `<div class="row small"><span class="${r.severity === 'pass' ? 's-ok' : r.severity === 'warn' ? 's-wait' : 's-err'}">${icon(r.severity === 'pass' ? 'check-circle-2' : r.severity === 'warn' ? 'alert-triangle' : 'x-circle')}</span><span class="strong">${esc(r.name)}</span><span class="muted grow ellipsis">${esc(r.detail)}</span></div>`).join('')}
     </div></div>
-    <div class="card"><div class="card-head"><h3>Permissions</h3><span class="small muted">Least privilege, derived from the scripts</span></div><div class="card-body row wrap">
-      ${Object.entries(e.permissions).map(([sys, scopes]) => `<span class="chip">${sysIcon(sys, true)}${esc(SYSTEMS[sys]?.name || sys)}: ${Object.entries(scopes).map(([k, v]) => `<span class="lvl-${v}">${k} ${v === 'approval' ? '(approval)' : v === 'deny' ? '✕' : '✓'}</span>`).join(', ')}</span>`).join('') || '<span class="muted small">No external permissions</span>'}
+    <div class="card"><div class="card-head"><h3>Permissions</h3><span class="small muted">Least privilege, derived from the scripts</span></div><div class="card-body col gap-6">
+      ${Object.entries(e.permissions || {}).map(([sys, scopes]) => `<div class="row wrap small"><span class="chip">${sysIcon(sys, true, sys === 'files' ? 'Knowledge files' : sysName(sys))}${esc(sys === 'files' ? 'Knowledge files' : sysName(sys))}</span>${Object.entries(scopes).map(([k, v]) => `<span class="lvl-${esc(v)}">${esc(SCOPE_LABELS[k] || k)} ${LEVEL_TEXT[v] || esc(v)}</span>`).join('<span class="faint">·</span>')}</div>`).join('') || '<span class="muted small">No permissions</span>'}
+      ${e.browser?.domains?.length ? `<div class="row wrap small"><span class="chip">${sysIcon('web', true)}Other websites (read only)</span>${e.browser.domains.map((d) => `<code>${esc(d)}</code>`).join(' ')}</div>` : ''}
     </div></div>
   </div>`;
 }

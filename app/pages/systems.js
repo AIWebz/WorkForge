@@ -164,6 +164,40 @@ async function removeSystem(app, id) {
   return true;
 }
 
+// ------------------------------------------------------------ system picker
+// Tiles for choosing which systems a business uses (onboarding, settings).
+const POPULAR = ['gmail', 'outlook', 'google_calendar', 'google_sheets', 'slack', 'microsoft_teams', 'hubspot', 'salesforce', 'shopify', 'zendesk', 'notion', 'linkedin'];
+
+export function systemPickerHtml(selected = [], { connections = [], limit = 12 } = {}) {
+  const all = allSystems(connections);
+  const order = [...new Set([...selected.filter((id) => all[id]), ...POPULAR, ...Object.keys(all)])];
+  const sel = new Set(selected);
+  return `<div class="tiles" data-picker>${order.map((id, i) => {
+    const s = all[id];
+    const extra = i >= limit;
+    return `<button type="button" class="tile ${sel.has(id) ? 'selected' : ''}" data-pick="${esc(id)}" aria-pressed="${sel.has(id)}" ${extra ? 'data-extra' : ''} ${extra && !sel.has(id) ? 'hidden' : ''}>${sysIcon(id, false, s.name)}<div class="grow" style="min-width:0"><div class="ellipsis">${esc(s.name)}</div><div class="tile-sub ellipsis">${esc(s.custom ? 'Custom' : s.group)}</div></div></button>`;
+  }).join('')}</div>${order.length > limit ? `<button type="button" class="link-btn mt-8" data-pick-more data-count="${order.length}">${icon('chevron-down')} Show all ${order.length} systems</button>` : ''}`;
+}
+
+/** Binds tiles rendered by systemPickerHtml; `selected` is a Set that is kept up to date. */
+export function bindSystemPicker(root, selected, onChange = () => {}) {
+  let open = false;
+  root.querySelectorAll('[data-pick]').forEach((t) => t.addEventListener('click', () => {
+    const id = t.dataset.pick;
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    t.classList.toggle('selected', selected.has(id));
+    t.setAttribute('aria-pressed', String(selected.has(id)));
+    onChange(selected);
+  }));
+  const more = root.querySelector('[data-pick-more]');
+  more?.addEventListener('click', () => {
+    open = !open;
+    root.querySelectorAll('[data-pick][data-extra]').forEach((t) => { t.hidden = !open && !selected.has(t.dataset.pick); });
+    more.innerHTML = open ? `${icon('chevron-up')} Show fewer` : `${icon('chevron-down')} Show all ${more.dataset.count} systems`;
+    refreshIcons();
+  });
+}
+
 // ------------------------------------------------------------ page
 export default async function systemsPage(ctx) {
   const { el, app } = ctx;

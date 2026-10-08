@@ -1,6 +1,27 @@
-import { esc, icon, avatar, statusBadge, timeAgo, fmtDateTime, refreshIcons, emptyState, toast } from '../ui.js';
-import { TOOL_MAP, SYSTEMS } from '../../extension/core/catalog.js';
+import { esc, icon, avatar, statusBadge, timeAgo, fmtDateTime, refreshIcons, emptyState, toast, sysIcon } from '../ui.js';
+import { TOOL_MAP, SCOPE_LABELS, allSystems, systemForUrl } from '../../extension/core/catalog.js';
 import { safeStringify } from '../../extension/core/util.js';
+
+/**
+ * The system an approval acts in, when it can be resolved: an explicit system
+ * on the record or in the args (browser_open), the URL the action targets, or
+ * the "… in <System>" suffix of runtime summaries.
+ */
+function approvalSystem(a, connections, tabUrl = '') {
+  const all = allSystems(connections);
+  const args = a.args || {};
+  let id = [a.system, args.system].find((x) => x && all[x]) || null;
+  for (const url of [args.url, a.url, a.tabUrl, a.browser?.url, tabUrl]) {
+    if (!id && url) id = systemForUrl(url, connections);
+  }
+  if (!id && a.summary) {
+    const hits = Object.keys(all).filter((k) => String(a.summary).includes(` in ${all[k].name}`)).sort((x, y) => all[y].name.length - all[x].name.length);
+    id = hits[0] || null;
+  }
+  return id ? { id, name: all[id].name } : null;
+}
+
+const sysChip = (sys) => (sys ? `<span class="chip">${sysIcon(sys.id, true, sys.name)}${esc(sys.name)}</span>` : '');
 
 export default async function approvals(ctx) {
   const { el, app } = ctx;
@@ -9,25 +30,28 @@ export default async function approvals(ctx) {
   const editing = new Set();
   const render = async () => {
     if (!ctx.isCurrent()) return;
-    const [all, employees] = await Promise.all([app.db.all('approvals'), app.db.all('employees')]);
+    const [all, employees, connections] = await Promise.all([app.db.all('approvals'), app.db.all('employees'), app.getConnections()]);
     const empById = Object.fromEntries(employees.map((e) => [e.id, e]));
     const pending = all.filter((a) => a.status === 'pending').sort((a, b) => a.createdAt - b.createdAt);
+    // The working tab of a pending approval's task tells which system a click / type happens in.
+    const tabUrls = Object.fromEntries(await Promise.all([...new Set(pending.map((a) => a.taskId).filter(Boolean))].map(async (id) => [id, (await app.db.get('tasks', id))?.browser?.url || ''])));
     const history = all.filter((a) => a.status !== 'pending').sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0)).slice(0, 100);
     page.innerHTML = `<div class="page-head"><div><h1>Human Approval Center</h1><p>Actions your employees want to take that require a person. Approve, edit, reject, or pause the employee.</p></div></div>
-      ${pending.length ? `<div class="col gap-16">${pending.map((a) => card(a, empById[a.employeeId], editing.has(a.id))).join('')}</div>` : `<div class="card">${emptyState('shield-check', 'Nothing waiting for you', 'When an employee wants to send an email, update a record, book a meeting or click in your browser, it appears here first.')}</div>`}
+      ${pending.length ? `<div class="col gap-16">${pending.map((a) => card(a, empById[a.employeeId], editing.has(a.id), approvalSystem(a, connections, tabUrls[a.taskId]))).join('')}</div>` : `<div class="card">${emptyState('shield-check', 'Nothing waiting for you', 'When an employee wants to click or type in one of your systems — send an email, update a record, book a meeting — and that step needs approval, it appears here first.')}</div>`}
       <h2 class="mt-24 mb-16">History</h2>
-      <div class="card">${history.length ? `<div class="table-wrap"><table class="log-table"><thead><tr><th>Request</th><th>Employee</th><th>Requested</th><th>Resolved</th><th>Outcome</th></tr></thead><tbody>${history.map((a) => `<tr><td><div class="small">${esc(a.summary)}</div>${a.note ? `<div class="tiny muted">Note: ${esc(a.note)}</div>` : ''}${a.response ? `<div class="tiny muted">Response: ${esc(a.response)}</div>` : ''}</td><td class="small">${esc(a.employeeName || empById[a.employeeId]?.name || '')}</td><td class="small muted">${fmtDateTime(a.createdAt)}</td><td class="small muted">${fmtDateTime(a.resolvedAt)}</td><td>${statusBadge(a.status)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="small muted card-body">No resolved approvals yet.</p>'}</div>`;
+      <div class="card">${history.length ? `<div class="table-wrap"><table class="log-table"><thead><tr><th>Request</th><th>Employee</th><th>Requested</th><th>Resolved</th><th>Outcome</th></tr></thead><tbody>${history.map((a) => { const sys = approvalSystem(a, connections); return `<tr><td><div class="row gap-6">${sys ? sysIcon(sys.id, true, sys.name) : ''}<div class="small">${esc(a.summary)}</div></div>${a.note ? `<div class="tiny muted">Note: ${esc(a.note)}</div>` : ''}${a.response ? `<div class="tiny muted">Response: ${esc(a.response)}</div>` : ''}</td><td class="small">${esc(a.employeeName || empById[a.employeeId]?.name || '')}</td><td class="small muted">${fmtDateTime(a.createdAt)}</td><td class="small muted">${fmtDateTime(a.resolvedAt)}</td><td>${statusBadge(a.status)}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="small muted card-body">No resolved approvals yet.</p>'}</div>`;
     bind(pending);
     refreshIcons();
   };
 
-  function card(a, emp, isEditing) {
+  function card(a, emp, isEditing, sys) {
     const tool = TOOL_MAP[a.tool];
+    const toolLabel = tool?.system === 'files' ? 'Knowledge files' : tool?.system === 'browser' ? (SCOPE_LABELS[tool.scope] || tool.scope) : '';
     const ext = a.origin === 'extension';
     const args = a.args || {};
     return `<div class="approval pending" data-ap="${a.id}">
       <div class="between"><div class="row">${emp ? avatar(emp) : ''}<div><div class="strong">${esc(a.summary)}</div><div class="tiny muted">${esc(a.taskTitle || '')} · ${esc(a.scriptName || '')} · ${timeAgo(a.createdAt)}</div></div></div>
-      <div class="row">${a.kind === 'escalation' ? '<span class="badge badge-danger">Escalation</span>' : `<span class="badge">${esc(SYSTEMS[tool?.system]?.name || tool?.system || '')} · ${esc(a.tool)}</span>`}${ext ? `<span class="badge badge-info">${icon('puzzle')} Extension</span>` : ''}</div></div>
+      <div class="row">${sysChip(sys)}${a.kind === 'escalation' ? '<span class="badge badge-danger">Escalation</span>' : `<span class="badge" title="${esc(tool?.description || '')}">${toolLabel ? `${esc(toolLabel)} · ` : ''}${esc(a.tool || '')}</span>`}${ext ? `<span class="badge badge-info">${icon('puzzle')} Extension</span>` : ''}</div></div>
       ${a.reason ? `<div class="small muted">Why approval is required: ${esc(a.reason)}</div>` : ''}
       ${a.kind === 'escalation' ? `<div class="callout">${icon('help-circle')}<div><div class="strong small">${esc(args.question || '')}</div>${args.context ? `<div class="small mt-4">${esc(args.context)}</div>` : ''}</div></div>
         <textarea class="textarea" data-response rows="3" placeholder="Your answer / decision for ${esc(emp?.name || 'the employee')}…" ${ext ? 'disabled' : ''}></textarea>`

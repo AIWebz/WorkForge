@@ -1,10 +1,11 @@
 import { esc, icon, toast, modal, confirmDialog, download, refreshIcons } from '../ui.js';
 import { PROVIDERS, testConnection } from '../../extension/core/ai.js';
 import { STORE_NAMES } from '../../extension/core/db.js';
-import { app } from '../state.js';
+import { app, syncExtension } from '../state.js';
 import { vault } from '../vault.js';
+import { systemPickerHtml, bindSystemPicker } from './systems.js';
 
-const SECTIONS = [['business', 'building-2', 'Business profile'], ['ai', 'cpu', 'AI Engine'], ['security', 'shield', 'Security & credentials'], ['data', 'database', 'Data & backup']];
+const SECTIONS = [['business', 'building-2', 'Business profile'], ['ai', 'cpu', 'AI Engine'], ['security', 'shield', 'Security'], ['data', 'database', 'Data & backup']];
 
 export default async function settings(ctx) {
   const { el, params, navigate } = ctx;
@@ -21,24 +22,29 @@ export default async function settings(ctx) {
 }
 
 // ------------------------------------------------------------ business
-function businessSection(host) {
+async function businessSection(host) {
   const b = app.business || {};
+  const rows = await app.getConnections();
+  const selected = new Set(b.systems || []);
   host.innerHTML = `<div class="card card-pad form-grid" style="max-width:760px">
-    <label class="field"><span>Company name</span><input class="input" id="b-name" value="${esc(b.name || '')}" placeholder="Acme Inc."></label>
-    <label class="field"><span>What does your business do?</span><textarea class="textarea" id="b-desc" rows="3">${esc(b.description || '')}</textarea></label>
-    <label class="field"><span>What work would you like to automate?</span><textarea class="textarea" id="b-auto" rows="3">${esc(b.automate || '')}</textarea></label>
-    <label class="field"><span>Systems you use (comma separated)</span><input class="input" id="b-sys" value="${esc((b.systems || []).join(', '))}"></label>
+    <label class="field"><span>What does your business do?</span><textarea class="textarea" id="b-desc" rows="3" placeholder="e.g. Online furniture store selling to customers across Europe">${esc(b.description || '')}</textarea></label>
+    <label class="field"><span>What work would you like to automate?</span><textarea class="textarea" id="b-auto" rows="3" placeholder="e.g. Lead follow-up, customer support, invoicing">${esc(b.automate || '')}</textarea></label>
+    <div class="field"><span>Which systems do you work in?</span><span class="help">Used when generating employees. Connect them in <a href="#/systems">Systems</a> so employees can open them.</span>
+      <div class="mt-8">${systemPickerHtml(b.systems || [], { connections: rows })}</div></div>
     <p class="help">This profile is stored as business memory for every employee you generate.</p>
     <div><button class="btn btn-primary" id="save">${icon('save')} Save</button></div>
   </div>`;
+  bindSystemPicker(host, selected);
   host.querySelector('#save').onclick = async () => {
     await app.saveBusiness({
-      name: host.querySelector('#b-name').value.trim(), description: host.querySelector('#b-desc').value.trim(),
-      automate: host.querySelector('#b-auto').value.trim(), systems: host.querySelector('#b-sys').value.split(',').map((s) => s.trim()).filter(Boolean),
+      description: host.querySelector('#b-desc').value.trim(),
+      automate: host.querySelector('#b-auto').value.trim(),
+      systems: [...selected],
     });
     app.events.emit({ type: 'business' });
     toast('Business profile saved', 'success');
   };
+  refreshIcons();
 }
 
 // ------------------------------------------------------------ AI engine
@@ -52,7 +58,7 @@ export function aiFormHtml(cfg, hasKey) {
       <label class="field" ${p === 'anthropic' ? '' : 'hidden'} id="ai-effort-wrap"><span>Reasoning effort</span><select class="select" id="ai-effort">${['', 'low', 'medium', 'high', 'xhigh'].map((x) => `<option value="${x}" ${cfg.effort === x ? 'selected' : ''}>${x || 'Model default'}</option>`).join('')}</select></label>
     </div>
     <label class="field" id="ai-base-wrap" ${p === 'anthropic' ? 'hidden' : ''}><span>Base URL</span><input class="input" id="ai-base" value="${esc(cfg.baseUrl || def.baseUrl)}" placeholder="https://…/v1"><span class="help">OpenAI-compatible endpoints (OpenAI, OpenRouter, Groq, a local Ollama with OLLAMA_ORIGINS set…) must allow browser requests.</span></label>
-    <label class="field"><span>API key</span><input class="input" type="password" id="ai-key" autocomplete="off" placeholder="${hasKey ? '•••••••• saved in vault — leave blank to keep' : def.keyHint}"><span class="help">Stored only in your browser's credential vault (${vault.mode}) and sent only to the provider above. Never commit keys to your repository.</span></label>
+    <label class="field"><span>API key</span><input class="input" type="password" id="ai-key" autocomplete="off" placeholder="${hasKey ? '•••••••• saved in vault — leave blank to keep' : def.keyHint}"><span class="help">Stored only in this browser's AI key vault (${vault.mode}) and sent only to the provider above. Never commit keys to your repository.</span></label>
     <div class="row"><button class="btn" id="ai-test">${icon('plug-zap')} Test connection</button><button class="btn btn-primary" id="ai-save">${icon('save')} Save</button><span class="small muted" id="ai-status"></span></div>
   </div>`;
 }
@@ -102,13 +108,13 @@ export function bindAiForm(root, onSaved) {
 async function aiSection(host) {
   const cfg = await app.db.getSetting('ai', {});
   host.innerHTML = `<div class="grid-2" style="grid-template-columns:1.3fr 1fr;align-items:start">
-    <div class="card card-pad">${vault.locked ? `<div class="callout warn mb-16">${icon('lock')}<div>The credential vault is locked. <button class="link-btn" id="unlock">Unlock</button></div></div>` : ''}${aiFormHtml(cfg, !!vault.get('ai.apiKey'))}</div>
+    <div class="card card-pad">${vault.locked ? `<div class="callout warn mb-16">${icon('lock')}<div>The AI key vault is locked. <button class="link-btn" id="unlock">Unlock</button></div></div>` : ''}${aiFormHtml(cfg, !!vault.get('ai.apiKey'))}</div>
     <div class="card card-pad col">
       <h3>${icon('cpu')} How the AI engine runs</h3>
       <p class="small muted">WorkForge is a static web app. The AI engine runs in this browser tab and calls your model provider directly with your key — there is no WorkForge server in between.</p>
       <ul class="small muted" style="padding-left:18px;margin:0">
         <li>Generation: requirement analysis + architecture design calls.</li>
-        <li>Execution: one model turn per step; tools run locally or against your connected systems.</li>
+        <li>Execution: one model turn per step. Employees act in your systems through the browser extension, with your own login; memory and knowledge files stay in this browser.</li>
         <li>Usage is billed by your provider to your account. Token counts are recorded per task.</li>
         <li>Claude models are called with the <code>anthropic-dangerous-direct-browser-access</code> header, which is required for browser-side use. Use a key with spend limits.</li>
       </ul>
@@ -124,19 +130,19 @@ function securitySection(host, ctx) {
   const s = app.settings;
   host.innerHTML = `<div class="grid-2" style="align-items:start">
     <div class="card card-pad form-grid">
-      <h3>${icon('key-round')} Credential vault</h3>
-      <p class="small muted">API keys and tokens are never stored in source code or the database. Choose where this browser keeps them:</p>
-      ${[['session', 'Session only', 'Cleared when this tab closes. Most private; re-enter keys each session.'], ['encrypted', 'Encrypted with a passphrase', 'AES-256-GCM in local storage, key derived with PBKDF2 (310k iterations). Unlock once per session.'], ['device', 'This device (unencrypted)', 'Convenient for a personal machine. Anyone with access to this browser profile can read the keys.']]
+      <h3>${icon('key-round')} AI key vault</h3>
+      <p class="small muted">The only secret WorkForge keeps is your AI provider key — employees use your own browser login in your systems, so there are no passwords or tokens to store. The key is never written to source code or the database. Choose where this browser keeps it:</p>
+      ${[['session', 'Session only', 'Cleared when this tab closes. Most private; re-enter the key each session.'], ['encrypted', 'Encrypted with a passphrase', 'AES-256-GCM in local storage, key derived with PBKDF2 (310k iterations). Unlock once per session.'], ['device', 'This device (unencrypted)', 'Convenient for a personal machine. Anyone with access to this browser profile can read the key.']]
     .map(([id, t, d]) => `<label class="check" style="align-items:flex-start"><input type="radio" name="vmode" value="${id}" ${vault.mode === id ? 'checked' : ''}><div><div class="strong">${t}</div><div class="help">${d}</div></div></label>`).join('')}
       <label class="field" id="pass-wrap" hidden><span>New passphrase</span><input class="input" type="password" id="pass" autocomplete="new-password" placeholder="At least 8 characters"></label>
       <div class="row"><button class="btn btn-primary" id="apply-mode">Apply</button>${vault.mode === 'encrypted' ? `<button class="btn" id="lock">${icon(vault.locked ? 'unlock' : 'lock')} ${vault.locked ? 'Unlock' : 'Lock now'}</button>` : ''}</div>
-      <p class="help">Current: <strong>${vault.mode}</strong>${vault.locked ? ' (locked)' : ''} · ${vault.locked ? '?' : Object.keys(vault.getAll() || {}).length} secret(s) stored.</p>
+      <p class="help">Current: <strong>${vault.mode}</strong>${vault.locked ? ' (locked)' : ''} · AI key ${vault.locked ? 'unavailable while locked' : vault.get('ai.apiKey') ? 'stored' : 'not stored'}.</p>
     </div>
     <div class="card card-pad form-grid">
       <h3>${icon('shield-check')} Execution safeguards</h3>
-      <div class="between"><div><div class="strong small">Require approval for every outbound action</div><div class="help">Overrides employee permissions: every send / write / create / click / form input waits for approval.</div></div><label class="toggle"><input type="checkbox" id="strict" ${s.approveAllOutbound ? 'checked' : ''}><span></span></label></div>
-      <div class="between"><div><div class="strong small">Share credentials with the browser extension</div><div class="help">When paired, the extension receives the AI key and system tokens (kept in its session storage) so employees can run in tabs.</div></div><label class="toggle"><input type="checkbox" id="share" ${s.shareCredentialsWithExtension ? 'checked' : ''}><span></span></label></div>
-      <div class="callout">${icon('info')}<div class="small">Always enforced: employees only get tools their scripts need, permission levels are checked on every call, unknown tools are blocked, browser navigation is limited to allowed domains, each employee only sees its own memory and granted collections, and every action is written to the audit log.</div></div>
+      <div class="between"><div><div class="strong small">Require approval for every outbound action</div><div class="help">Overrides employee permissions: every click and every form input in your systems waits for your approval.</div></div><label class="toggle"><input type="checkbox" id="strict" ${s.approveAllOutbound ? 'checked' : ''}><span></span></label></div>
+      <div class="between"><div><div class="strong small">Share the AI key with the browser extension</div><div class="help">When paired, the extension receives your AI key (kept in its session storage, cleared when the browser closes) so employees can also be started from its side panel. Off: enter a key in the extension yourself.</div></div><label class="toggle"><input type="checkbox" id="share" ${s.shareAiKeyWithExtension ? 'checked' : ''}><span></span></label></div>
+      <div class="callout">${icon('info')}<div class="small">Always enforced: employees only get tools their scripts need, permission levels are checked on every call, unknown tools are blocked, employees can only open the systems they were given (other websites you allow are read-only), they never type into password fields, each employee only sees its own memory and granted collections, and every action is written to the audit log.</div></div>
     </div>
   </div>`;
   const pw = host.querySelector('#pass-wrap');
@@ -155,14 +161,18 @@ function securitySection(host, ctx) {
     else { vault.lock(); securitySection(host, ctx); }
   });
   host.querySelector('#strict').onchange = (e) => app.saveSecurity({ approveAllOutbound: e.target.checked }).then(() => toast('Saved', 'success'));
-  host.querySelector('#share').onchange = (e) => app.saveSecurity({ shareCredentialsWithExtension: e.target.checked }).then(() => toast('Saved', 'success'));
+  host.querySelector('#share').onchange = async (e) => {
+    await app.saveSecurity({ shareAiKeyWithExtension: e.target.checked });
+    toast(e.target.checked ? 'The AI key will be shared on the next sync' : 'The AI key is no longer shared with the extension', 'success');
+    if (app.bridge.paired) syncExtension().catch(() => {});
+  };
   refreshIcons();
 }
 
 export function unlockDialog(after) {
   modal({
-    title: 'Unlock credential vault',
-    subtitle: 'Your API keys are encrypted with your passphrase.',
+    title: 'Unlock the AI key vault',
+    subtitle: 'Your AI provider key is encrypted with your passphrase.',
     body: '<label class="field"><span>Passphrase</span><input class="input" type="password" id="unlock-pass" autocomplete="current-password"></label>',
     actions: [
       { label: 'Cancel' },
@@ -182,12 +192,12 @@ function dataSection(host, navigate) {
   host.innerHTML = `<div class="grid-2" style="align-items:start">
     <div class="card card-pad form-grid">
       <h3>${icon('download')} Backup</h3>
-      <p class="small muted">Export employees, memory, files, tasks, activity, approvals and reports as JSON. Credentials are never included.</p>
+      <p class="small muted">Export employees, memory, files, tasks, activity, approvals and reports as JSON. Your AI key is never included.</p>
       <div class="row"><button class="btn" id="export">${icon('download')} Export backup</button><label class="btn">${icon('upload')} Import backup<input type="file" accept="application/json" id="import" hidden></label></div>
     </div>
     <div class="card card-pad form-grid">
       <h3 style="color:var(--danger)">${icon('trash-2')} Danger zone</h3>
-      <p class="small muted">Delete all WorkForge data stored in this browser, including credentials.</p>
+      <p class="small muted">Delete all WorkForge data stored in this browser, including the AI key.</p>
       <div><button class="btn btn-danger" id="wipe">Delete all data</button></div>
     </div>
   </div>`;
@@ -209,7 +219,7 @@ function dataSection(host, navigate) {
     } catch (err) { toast(err.message, 'error'); }
   };
   host.querySelector('#wipe').onclick = async () => {
-    if (!(await confirmDialog('This permanently deletes all employees, files, tasks, logs and credentials in this browser.', { confirm: 'Delete everything', danger: true }))) return;
+    if (!(await confirmDialog('This permanently deletes all employees, files, tasks, logs and the AI key in this browser.', { confirm: 'Delete everything', danger: true }))) return;
     for (const s of STORE_NAMES) await app.db.clear(s);
     await vault.wipe();
     await app.load();
